@@ -1,0 +1,136 @@
+---
+title: "MAYO Cleaning"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(ggdendro)
+
+source("../utils/plot_theme.R")
+```
+
+```{r load_data}
+labels <- read.table("raw_data/MAYO_CBE_TCX_Covariates.tsv", header=TRUE, sep="\t", row.names=1)
+cleaned <- read.table("raw_data/MAYO_CBE_TCX_netResidualExpression_imputed.tsv", header=TRUE, sep="\t", row.names=1)
+
+# Fix column names
+colnames(cleaned) <- substring(colnames(cleaned), 2)
+
+# Extract the patient IDs and gene names
+patient.key <- colnames(cleaned)
+
+# Match data structures
+cleaned <- t(cleaned)
+cleaned <- apply(cleaned, 2, as.numeric)
+cleaned <- as.data.frame(cleaned)
+
+# Merge labels (covariates) and data
+cleaned$Patient <- patient.key
+labels$Patient <- row.names(labels)
+cleaned <- merge(labels, cleaned, by="Patient")
+```
+
+Principle Component Analysis
+----------------------------
+
+The data has been extensively transformed. We will perform PCA decomposition on the expression data to make sure that there are no obvious outliers.
+
+```{r}
+# Any resulting PCs with SD < 0.01 are not included
+pca.results <- cleaned[,(ncol(labels)+1):ncol(cleaned)] %>%
+  prcomp(scale=F, center=T, tol=0.01)
+summary(pca.results)$importance[1:2]
+
+# Visualize the PCA
+pca.plot <- cbind(Diagnosis=cleaned$Tissue.Diagnosis, as.data.frame(pca.results$x[,1:2]))
+ggplot(data=pca.plot, aes(x=PC1, y=PC2, color=Diagnosis)) +
+  geom_point(size=I(2), alpha=0.5) +
+  ggtitle("PCA of Samples Colored by Diagnosis") +
+  xlab("PC1 (21.6713%)") + 
+  ylab("PC2 (20.0321%)") +
+  basic_theme_big
+ggsave("results/1_mayo_cleaning/mayo_diagnosis_PCA.png", width=8, height=8)
+```
+
+Hierarchical Clustering
+-----------------------
+
+Generate a dendrogram to visualize relationships between samples.
+
+```{r}
+# Create dendrogram
+row.names(cleaned) <- 1:nrow(cleaned)
+cleaned$ID <- 1:nrow(cleaned)
+dend.expr <- cleaned[,(ncol(labels)+1):ncol(cleaned)] %>%
+  scale %>%
+  dist %>%
+  hclust %>%
+  as.dendrogram()
+
+# Plot dendrogram
+dendro.data <- dendro_data(dend.expr, type="rectangle")
+dendro.data$labels <- merge(x=dendro.data$labels, y=cleaned, by.x="label", by.y="ID")
+dendro.data$labels[,"label"] <- patient.key[dendro.data$labels[,"label"]]
+
+# Plot dendrogram with colored branches and legend
+ggplot() +
+  geom_segment(data=segment(dendro.data), aes(x=x, y=y, xend=xend, yend=yend)) +
+  geom_segment(data = dendro.data$segments %>%
+                 filter(yend == 0) %>%
+                 left_join(dendro.data$labels, by="x"), aes(x=x, y=y.x, xend=xend, yend=yend, color=Tissue.Diagnosis)) +
+  geom_text(data=label(dendro.data), aes(x=x, y=y, label=label, color=Tissue.Diagnosis, hjust=0), size=1) +
+  coord_flip() +
+  scale_y_reverse(expand=c(0.2, 0)) +
+  scale_colour_brewer(palette="RdBu") + 
+  basic_theme_big +
+  theme_dendro() +
+  ggtitle("Hierarchical Clustering of Patients Colored by Diagnosis")
+ggsave("results/1_mayo_cleaning/mayo_diagnosis_hierarchial_clustering.png", width=8, height=8)
+```
+
+Tissue Removal and Cleaning
+---------------------------
+
+Here, we normalize the data across the cohorts. We remove the CBE data from MAYO and choose to focus on the TCX tissue. We retain the source diagnosis in a separate column but choose to treat PSP and Pathological Aging diagnoses as controls for downstream analyses. 
+
+```{r}
+# Remove ID column created previously
+cleaned <- cleaned[,-which(colnames(cleaned) == "ID")]
+
+# Remove CBE Data
+cleaned <- cleaned[grep("TCX", cleaned$Patient),]
+patient.key <- cleaned$Patient[grep("TCX", cleaned$Patient)]
+
+# Remove tissue name from diagnosis
+src.diagnosis <- gsub("TCX.", "", cleaned$Tissue.SourceDiagnosis)
+diagnosis <- src.diagnosis
+
+# Convert Progressive Supranuclear Palsy and Pathological Age to Controls
+diagnosis <- gsub("PSP", "CONTROL", diagnosis)
+diagnosis <- gsub("PATH_AGE", "CONTROL", diagnosis)
+
+# Add diagnosis column before genes
+cleaned <- cbind(cleaned[,1:18], diagnosis, src.diagnosis, cleaned[,-(1:18)])
+colnames(cleaned)[19] <- "Diagnosis"
+colnames(cleaned)[20] <- "Source.Diagnosis"
+
+# Get final list of genes
+gene.key <- colnames(cleaned)[-(1:20)]
+
+# Set patients as key to cleaned data
+rownames(cleaned) <- cleaned$Patient
+```
+
+```{r}
+# Save data for further analysis
+saveRDS(patient.key, file=paste0("clean_data/1_mayo_cleaning/mayo_patient_key.RDS"))
+saveRDS(gene.key, file=paste0("clean_data/1_mayo_cleaning/mayo_gene_key.RDS"))
+saveRDS(cleaned, file=paste0("clean_data/1_mayo_cleaning/mayo_cleaned.RDS"))
+```
+

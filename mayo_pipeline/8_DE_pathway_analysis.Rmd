@@ -1,0 +1,240 @@
+---
+title: "Differential Expression Pathway Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Detach all packages
+if (!is.null(sessionInfo()$otherPkgs)) {
+  lapply(paste('package:',names(sessionInfo()$otherPkgs),sep=""),detach,character.only=TRUE,unload=TRUE)
+}
+
+rm(list=ls())
+
+library(ggplot2)
+library(dplyr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(enrichplot)
+library(pheatmap)
+library(RColorBrewer)
+library(pathview)
+library(filesstrings)
+library(VennDiagram)
+library(gridExtra)
+
+source("../utils/plot_theme.R")
+```
+
+```{r load_data, include=FALSE}
+gene.key <- readRDS("clean_data/1_mayo_cleaning/mayo_gene_key.RDS")
+subtypes <- readRDS("clean_data/4_stratification/mayo_patient_subtypes.RDS")
+n.subs <- length(unique(subtypes$Subtype)) - 1
+
+de <- lapply(LETTERS[1:n.subs], function(x) { readRDS(paste0("clean_data/7_DE_analysis/subtype.", x, ".limma.RDS")) })
+```
+
+Pathway Analysis
+----------------
+
+First, I collected the gene set assocaited with the Microglial Cell Activation GO term (GO:0001774). I retrieved these manually to generate the heatmap and stored them in `clean_data/20_DE_analysis/microglial_activation_GO_genes.txt`. I retrieved values from the differential expression analysis for the genes from the GO term and created a heatmap based on the fold change observed for the gene in each subtype of patients when compared to controls and MCI patients.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+mca.go.data <- read.table("raw_data/microglial_activation_GO_genes.txt", header=F, sep="\t", stringsAsFactors=F)
+
+mca.go.data <- bitr(mca.go.data[,3], fromType="SYMBOL", toType="ENSEMBL", OrgDb=org.Hs.eg.db)
+mca.go <- intersect(mca.go.data$ENSEMBL, gene.key)
+
+mca.go.key <- subset(mca.go.data, ENSEMBL %in% mca.go)$SYMBOL
+
+heat.mtx <- do.call(cbind, lapply(de, function(x) x[mca.go, "Log.Fold.Change"]))
+rownames(heat.mtx) <- mca.go.key
+colnames(heat.mtx) <- LETTERS[1:n.subs]
+heat.mtx <- t(heat.mtx)
+```
+
+```{r}
+(p <- pheatmap(
+  heat.mtx,
+  cluster_rows=F,
+  cluster_cols=T,
+  treeheight_col=0,
+  color=colorRampPalette(c("red", "black", "yellow"))(101),
+  border_color=F,
+  breaks=seq(-0.7, 0.7, length.out=101)
+))
+ggsave(filename="results/8_DE_pathway_analysis/GO_microglia_activation_heat.svg", plot=p, width=13, height=4)
+```
+
+I also retrieved the genes implicated in the Osteoclast Differentiation (TREM2/TYROBP) pathway on KEGG. I created a heatmap from the differential expression fold change data for the three subtypes for these genes as well. 
+
+```{r, include=FALSE}
+mca.go.data <- bitr_kegg("hsa04380", "Path", "ncbi-geneid", "hsa")$`ncbi-geneid`
+mca.go.data <- bitr(mca.go.data, fromType="ENTREZID", toType="ENSEMBL", OrgDb=org.Hs.eg.db)
+mca.go.data <- merge(mca.go.data, bitr(mca.go.data$ENSEMBL, fromType="ENSEMBL", toType="SYMBOL", OrgDb=org.Hs.eg.db), by="ENSEMBL")
+mca.go.data <- mca.go.data[!duplicated(mca.go.data$ENSEMBL),]
+mca.go <- intersect(mca.go.data$ENSEMBL, gene.key)
+
+mca.go.key <- subset(mca.go.data, ENSEMBL %in% mca.go)$SYMBOL
+
+heat.mtx <- do.call(cbind, lapply(de, function(x) x[mca.go, "Log.Fold.Change"]))
+rownames(heat.mtx) <- mca.go.key
+colnames(heat.mtx) <- LETTERS[1:n.subs]
+heat.mtx <- t(heat.mtx)
+```
+
+```{r}
+(p <- pheatmap(
+  heat.mtx, 
+  cluster_rows=F,
+  cluster_cols=T,
+  treeheight_col=0,
+  color=colorRampPalette(c("red", "black", "yellow"))(100),
+  border_color=F,
+  breaks=seq(-0.7, 0.7, length.out=101)
+))
+ggsave(filename="results/8_DE_pathway_analysis/KEGG_microglia_activation_heat.svg", plot=p, width=15, height=4)
+```
+
+Reactome Pathway Analysis
+-------------------------
+
+Here I perform Reactome Pathway analysis on the differentially expressed genes for each subtype. I have a adjusted p-value cutoff of 0.1 and a fold change cutoff of 0.5.
+
+```{r include=FALSE}
+reacts <- list()
+de.dfs <- de
+
+for (de in de.dfs) {
+  de.genes <- de %>% 
+    filter(Log.P.Value > -log10(0.2) & abs(Log.Fold.Change) > 0.3) %>%
+    dplyr::select(Gene)
+  de.genes <- de.genes[,1]
+  de.genes <- bitr(de.genes, fromType="ENSEMBL", toType="ENTREZID", OrgDb=org.Hs.eg.db)$ENTREZID
+  
+  reacts[[length(reacts)+1]] <- enrichPathway(gene=de.genes, pvalueCutoff=0.05, readable=T)
+}
+```
+
+```{r}
+lapply(reacts, function(x) {
+  barplot(x) + 
+    labs(y="Gene Ratio") +
+    guides(fill=guide_colorbar("Adjusted P-Value")) +
+    basic_theme_big
+})
+```
+
+```{r}
+lapply(reacts, function(x) {
+  dotplot(x, showCategory=15) +
+    guides(color=guide_colorbar("Adjusted P-Value")) +
+    labs(y="Gene Ratio") +
+    basic_theme_big
+})
+```
+
+I was interested in directly comparing the Reactome pathways for subtype A and B. 
+
+```{r, include=FALSE}
+plot.data <- rbind(
+  as.data.frame(reacts[[1]]) %>% 
+    dplyr::select(Description=Description, Log.P.Value=p.adjust) %>%
+    dplyr::mutate(Log.P.Value=-log10(Log.P.Value), Subtype="A") %>%
+    top_n(20, Log.P.Value),
+  as.data.frame(reacts[[2]]) %>%
+    dplyr::select(Description=Description, Log.P.Value=p.adjust) %>%
+    dplyr::mutate(Log.P.Value=-log10(Log.P.Value), Subtype="B") %>%
+    top_n(20, Log.P.Value)
+) %>% dplyr::arrange(abs(Log.P.Value))
+plot.data$Description = factor(plot.data$Description, levels=unique(plot.data$Description[nrow(plot.data):1]))
+```
+
+```{r}
+ggplot(plot.data) +
+  geom_bar(aes(x=Description, y=Log.P.Value, fill=Subtype), stat="identity") +
+  scale_fill_brewer(palette="Dark2") +
+  guides(fill=F) +
+  coord_flip() +
+  xlab("") + ylab("Adjusted P-Value") +
+  facet_grid(~Subtype) +
+  basic_theme
+ggsave(filename="results/8_DE_pathway_analysis/de_reactome_annots.svg", width=12, height=7)
+```
+
+KEGG Enrichment Analysis
+------------------------
+
+I ran KEGG enrichment to assess pathways that are highly differentially expressed. I use a adjusted p-value cutoff of 0.1.
+
+```{r, include=FALSE}
+keggs <- list()
+
+for (de in de.dfs) {
+  de.kegg.data <- de %>% 
+    dplyr::filter(Log.P.Value > -log10(0.1))
+  de.kegg.data <- merge(
+    de.kegg.data, 
+    bitr(de.kegg.data$Gene, fromType="ENSEMBL", toType="ENTREZID", OrgDb=org.Hs.eg.db),
+    by.x="Gene",
+    by.y="ENSEMBL"
+  )
+  
+  de.kegg.genes <- de.kegg.data$Log.Fold.Change
+  names(de.kegg.genes) <- de.kegg.data$ENTREZID
+  de.kegg.genes <- sort(de.kegg.genes, decreasing=T)
+  
+  kegg <- gseKEGG(de.kegg.genes, organism="hsa", nPerm=1000, minGSSize=50, maxGSSize=200, pvalueCutoff=0.1, verbose=F)
+  print(as.data.frame(kegg))
+  keggs[[length(keggs)+1]] <- kegg
+}
+```
+
+One specific pathway we are interested in is the TREM2/TYROBP pathway, annotated as the KEGG Osteoclast Differentiation pathway (KEGG:hsa04380). We will search for this pathway specifically and assess its enrichment in subtype B.
+
+```{r}
+os.d.b <- which(keggs[[2]]$ID == "hsa04380")
+q <- gseaplot(keggs[[2]], geneSetID=os.d.b, by="runningScore", title=keggs[[2]]$Description[os.d.b]) +
+  basic_theme_big +
+  labs(title="KEGG Pathway for Osteoclast Differentiation in Subtype B")
+q$layers[[2]]$aes_params = list(colour = "#f85900", size=0.75)
+q
+ggsave(filename="results/8_DE_pathway_analysis/osteo_diff_gene_ranks_B.svg", plot=q, width=10, height=3)
+```
+
+```{r, include=FALSE}
+for (de.id in 1:length(de.dfs)) {
+  de.x <- de.dfs[[de.id]]
+  de.x.kegg <- de.x %>% 
+    filter(Log.P.Value > -log10(0.1))
+  de.x.kegg <- merge(
+    de.x.kegg,
+    bitr(de.x.kegg$Gene, fromType="ENSEMBL", toType="ENTREZID", OrgDb=org.Hs.eg.db),
+    by.x="Gene", 
+    by.y="ENSEMBL"
+  )
+  
+  de.x.genes <- de.x.kegg$Log.Fold.Change
+  names(de.x.genes) <- de.x.kegg$ENTREZID
+  de.x.genes <- sort(de.x.genes, decreasing=T)
+  
+  maps <- c("hsa05010", "hsa04380", "hsa04062", "hsa04670", "hsa04140")
+  for (map in maps) {
+    dir.create(paste0("results/8_DE_pathway_analysis/subtype_", tolower(LETTERS[de.id]), "/"), showWarnings = FALSE)
+    pathview(
+      gene.data=de.x.genes,
+      pathway.id=map,
+      species="hsa",
+      limit=list(gene=max(abs(de.x.genes)), cpd=1),
+      kegg.dir=paste0("results/8_DE_pathway_analysis/subtype_", tolower(LETTERS[de.id]), "/"),
+      low=list(gene="red", cpd="blue"),
+      high=list(gene="green", cpd="yellow")
+    )
+    file.move(paste0(map, ".pathview.png"), paste0("results/8_DE_pathway_analysis/subtype_", tolower(LETTERS[de.id]), "/"), overwrite=T)
+  }
+}
+```
+

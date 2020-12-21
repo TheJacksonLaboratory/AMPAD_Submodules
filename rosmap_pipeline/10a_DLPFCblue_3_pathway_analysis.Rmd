@@ -1,0 +1,70 @@
+---
+title: "DLPFCblue_3 Pathway Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(WGCNA)
+library(igraph)
+
+source("../utils/plot_theme.R")
+```
+
+```{r load_data, include=FALSE}
+gene.key <- readRDS("clean_data/1_rosmap_cleaning/rosmap_gene_key.RDS")
+subtypes <- readRDS("clean_data/4_stratification/rosmap_patient_subtypes.RDS")
+n.subs <- length(unique(subtypes$Subtype)) - 1
+
+de <- lapply(LETTERS[1:n.subs], function(x) { readRDS(paste0("clean_data/7_DE_analysis/subtype.", x, ".limma.RDS")) })
+
+submodule.genes <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_sig_genes.RDS")
+
+cleaned <- readRDS("clean_data/1_rosmap_cleaning/rosmap_cleaned.RDS")
+
+SM <- "DLPFCblue_3"
+```
+
+Network Analysis
+----------------
+
+```{r}
+test <- submodule.genes %>% dplyr::filter(Submodule == SM)
+gene.exp <- cleaned[,test$Gene]
+
+soft.th <- pickSoftThreshold(gene.exp, powerVector=1:20, networkType="signed")
+ggplot(soft.th$fitIndices) +
+  geom_text(aes(x=Power, y=SFT.R.sq, label=Power))
+
+adj <- adjacency(gene.exp, type="signed", power=9)
+
+adj.graph <- adj
+samples <- names(sort(colSums(adj)))
+adj.graph <- adj.graph[samples, samples]
+
+diag(adj.graph) <- 0
+adj.graph <- ((adj.graph - min(adj.graph)) / max(adj.graph - min(adj.graph)))
+adj.graph[adj.graph < 0.3] <- 0
+
+net <- graph_from_adjacency_matrix(adj.graph, mode="undirected", weighted=TRUE, diag=F, add.rownames=T)
+s <- sort(colSums(adj))
+V(net)$size <- ((s - min(s)) / max(s - min(s))) * 10 + 10
+w <- E(net)$weight
+E(net)$width <- ((w - min(w)) / max(w - min(w))) * 2
+samples.hgnc <- bitr(samples, fromType="ENSEMBL", toType="SYMBOL", OrgDb=org.Hs.eg.db)
+samples.hgnc <- samples.hgnc[!duplicated(samples.hgnc$ENSEMBL),]
+rownames(samples.hgnc) <- samples.hgnc$ENSEMBL
+V(net)$name <- samples.hgnc[V(net)$name, "SYMBOL"]
+
+V(net)$comp <- components(net)$membership
+net.sub <- induced_subgraph(net, V(net)$comp %in% which(table(V(net)$comp) != 1))
+plot(net.sub, layout=layout_with_kk)
+```
+

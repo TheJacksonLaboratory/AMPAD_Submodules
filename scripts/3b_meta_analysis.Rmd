@@ -1,0 +1,68 @@
+---
+title: "Meta Analysis Post-Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggplot2)
+library(data.table)
+library(rtracklayer)
+library(GenomicRanges)
+
+source("../utils/manhattan_plots.R")
+source("../utils/plot_theme.R")
+```
+
+Create Manhattan Plots
+----------------------
+
+```{r include=FALSE}
+files <- list.files("results/3_meta_analysis/METAL_files/", pattern="*.tbl")
+
+snps <- lapply(files, function(x) {
+  
+  cat("Processing meta-analysis", x, "\n")
+  
+  # Load and process results
+  gwas.results <- fread(paste0("results/3_meta_analysis/METAL_files/", x), sep="\t")
+  gwas.results <- gwas.results[,c("MarkerName", "P-value")]
+  colnames(gwas.results) <- c("SNP", "P")
+  
+  # Calculate genomic inflation factor
+  chisq <- qchisq(1 - gwas.results[["P"]], 1)
+  lambda <- median(chisq) / qchisq(0.5, 1)
+  cat("\t", "Genomic Inflation Factor λ =", lambda, "\n")
+  
+  # Reduce to significant SNPs
+  gwas.results <- as.data.frame(gwas.results[gwas.results[["P"]] < 0.05,])
+  
+  # Generate chromosome and base-pair columns
+  chr.bp <- do.call(rbind, strsplit(gwas.results$SNP, ":"))
+  gwas.results$CHR <- as.numeric(chr.bp[,1])
+  gwas.results$BP <- as.numeric(chr.bp[,2])
+  
+  # Generate manhattan plot
+  p <- manhattan.plot(gwas.results)
+  ggsave(paste0("results/3_meta_analysis/METAL_files/", strsplit(x, "\\.")[[1]][1], ".png"), plot=p, width=15, height=6)
+
+  # Store suggestive SNPs
+  gwas.results <- gwas.results %>%
+    dplyr::arrange(CHR, BP) %>%
+    dplyr::select(SNP, CHR, BP, P) %>%
+    dplyr::filter(P < 1e-05) %>%
+    dplyr::mutate(Submodule=strsplit(x, "\\.")[[1]][1])
+  return(gwas.results)
+})
+
+snps <- do.call(rbind, snps)
+write.csv(snps, "results/3_meta_analysis/METAL_files/suggestive_snps.csv", row.names=F, quote=F)
+
+snps <- split(snps, snps$Submodule)
+lapply(1:length(snps), function(i, x, n) {
+  write.csv(x[[i]], paste0("results/3_meta_analysis/METAL_files/", n[i], ".csv"), row.names=F, quote=F)
+}, x=snps, n=names(snps))
+```
+

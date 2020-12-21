@@ -1,0 +1,11 @@
+clean_data/
+raw_data/
+results/
+documents/
+gananda/
+exploratory_scripts/
+README.html
+README.Rmd
+
+*.Rproj
+*.DS_Store

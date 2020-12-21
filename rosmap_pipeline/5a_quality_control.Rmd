@@ -1,0 +1,38 @@
+---
+title: "Quality Control"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(data.table)
+
+source("../utils/plot_theme.R")
+source("../utils/qq_plots.R")
+```
+
+```{r load_data}
+#files <- list.files(path="clean_data/5_gwas/5a_gwas_results/", pattern="\\.ps$")
+files <- paste0(c("A", "B", "DLPFCblue_3", "DLPFCbrown_1", "DLPFCyellow_1", "DLPFCyellow_2"), ".pheno.output.ps")
+```
+
+Generating QQ-plots to make sure that there is no population substructure affecting the analysis. Only generate SVGs if necessary - they are large, gigabyte-sized files that take a long time to generate.
+
+```{r}
+for (file in files) {
+
+  cat(file, "\n")
+  gwas.results <- fread(paste0("clean_data/5_gwas/5a_gwas_results/", file), sep="\t", header=F)
+  colnames(gwas.results) <- c("SNP.ID", "Beta", "Beta.SE", "P.Value")
+  
+  png(paste0("results/5_gwas/", strsplit(file, "\\.")[[1]][1], "_qqplot.png"), width=8, height=8, units="in", res=600)
+  qqunif.plot(gwas.results$P.Value)
+  dev.off()
+}
+```
+

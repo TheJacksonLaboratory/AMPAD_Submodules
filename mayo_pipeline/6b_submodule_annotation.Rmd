@@ -1,0 +1,126 @@
+---
+title: "Submodule Annotation"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(clusterProfiler)
+library(ReactomePA)
+library(org.Hs.eg.db)
+```
+
+```{r}
+eigengenes <- readRDS("clean_data/3_iterative_WGCNA_cleaning/mayo_eigengenes.RDS")
+submodules <- readRDS("clean_data/3_iterative_WGCNA_cleaning/mayo_submodule_labels.RDS")
+submodule.genes <- readRDS("clean_data/3_iterative_WGCNA_cleaning/mayo_submodule_sig_genes.RDS")
+```
+
+Pathway Enrichment
+------------------
+
+Here, I generate annotations for each submodule using KEGG, GO, and Reactome terms/pathways. For each, I also run Gene Set Enrichment, 
+
+```{r}
+annots <- lapply(submodules, function(submodule) {
+  # Get significant genes for submodule
+  sig.genes <- subset(submodule.genes, Submodule == submodule)
+  sig.genes.map <- bitr(sig.genes$Gene, fromType="ENSEMBL", toType="ENTREZID", OrgDb=org.Hs.eg.db)
+  sig.genes <- merge(sig.genes, sig.genes.map, by.x="Gene", by.y="ENSEMBL")
+  sig.genes <- sig.genes %>% dplyr::arrange(desc(Value))
+  
+  # Generate gene list
+  gene.list <- sig.genes$Value
+  names(gene.list) <- sig.genes$ENTREZID
+  
+  # Run KEGG enrichment and Gene Set enrichment using correlation with module eigengene
+  kegg <- enrichKEGG(names(gene.list), keyType="ncbi-geneid", organism="hsa", pvalueCutoff=0.2, pAdjustMethod="BH", qvalueCutoff=0.1)
+  kegg.gse <- gseKEGG(gene.list, organism="hsa", keyType="ncbi-geneid", minGSSize=1, pvalueCutoff=0.5)
+  
+  # Annotate IDs with HGNC symbols
+  kegg <- as.data.frame(kegg)
+  kegg$geneSymbol <- character(nrow(kegg))
+  kegg.gse <- as.data.frame(kegg.gse)
+  kegg.gse$geneSymbol <- character(nrow(kegg.gse))
+  
+  if (nrow(kegg) > 0) {
+    kegg$geneSymbol <- sapply(
+      lapply(
+        strsplit(kegg$geneID, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  if (nrow(kegg.gse) > 0) {
+    kegg.gse$geneSymbol <- sapply(
+      lapply(
+        strsplit(kegg.gse$core_enrichment, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  
+  # Run GO enrichment and Gene Set enrichment using correlation with module eigengene
+  go <- enrichGO(names(gene.list), OrgDb=org.Hs.eg.db, keyType="ENTREZID", pvalueCutoff=0.05, minGSSize=1)
+  go.gse <- gseGO(gene.list, OrgDb=org.Hs.eg.db, keyType="ENTREZID", minGSSize=1, pvalueCutoff=0.25)
+  
+  # Annotate IDs with HGNC symbols
+  go <- as.data.frame(go)
+  go$geneSymbol <- character(nrow(go))
+  go.gse <- as.data.frame(go.gse)
+  go.gse$geneSymbol <- character(nrow(go.gse))
+  
+  if (nrow(go) > 0) {
+    go$geneSymbol <- sapply(
+      lapply(
+        strsplit(go$geneID, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  if (nrow(go.gse) > 0) {
+    go.gse$geneSymbol <- sapply(
+      lapply(
+        strsplit(go.gse$core_enrichment, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  
+  # Run Reactome pathway enrichment and Gene Set enrichment using correlation with module eigengene
+  react <- enrichPathway(names(gene.list), organism="human", pvalueCutoff=0.2, minGSSize=1)
+  react.gse <- gsePathway(gene.list, organism="human", minGSSize=1, pvalueCutoff=0.2)
+  
+  # Annotate IDs with HGNC symbols
+  react <- as.data.frame(react)
+  react$geneSymbol <- character(nrow(react))
+  react.gse <- as.data.frame(react.gse)
+  react.gse$geneSymbol <- character(nrow(react.gse))
+  
+  if (nrow(react) > 0) {
+    react$geneSymbol <- sapply(
+      lapply(
+        strsplit(react$geneID, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  if (nrow(react.gse) > 0) {
+    react.gse$geneSymbol <- sapply(
+      lapply(
+        strsplit(react.gse$core_enrichment, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  
+  return(list(KEGG=kegg, KEGG.GSE=kegg.gse, GO=go, GO.GSE=go.gse, Reactome=react, Reactome.GSE=react.gse))
+})
+names(annots) <- unlist(submodules)
+saveRDS(annots, "clean_data/6_submodule_annotation/mayo_submodule_annots.RDS")
+```

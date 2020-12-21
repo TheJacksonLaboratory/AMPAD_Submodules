@@ -1,0 +1,154 @@
+---
+title: "GWAS Significant SNP Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+
+rm(list=ls())
+
+library(ggplot2)
+library(dplyr)
+library(pheatmap)
+library(RColorBrewer)
+library(SNPlocs.Hsapiens.dbSNP144.GRCh37)
+```
+
+```{r load_data}
+catalog <- read.delim("raw_data/gwas_catalog_v1.0.2-associations_e96_r2019-05-03.tsv", header=T, sep="\t", stringsAsFactors=F)
+
+# Retrieve all files for cohort
+files <- list.files(path="clean_data/5_gwas/5a_cleaning/", pattern="\\.ps.sig$")
+files <- files[-grep("Case", files)]
+```
+
+```{r}
+results <- lapply(files, function(x) {
+  
+  cat(x, "\n")
+  sig <- read.table(paste0("clean_data/5_gwas/5a_cleaning/", x), header=F, sep="\t", stringsAsFactors=F)
+  colnames(sig) <- c("SNP", "Beta", "Beta.SE", "P.Value")
+  
+  sig.su <- sig %>% dplyr::filter(P.Value < 1e-05)
+  sig.gw <- sig %>% dplyr::filter(P.Value < 5e-08)
+  
+  su.gpos <- GPos(sapply(strsplit(sig.su$SNP, ":"), function(x) paste0(x[1], ":", x[2])))
+  
+  query <- snpsByOverlaps(
+    SNPlocs.Hsapiens.dbSNP144.GRCh37,
+    su.gpos
+  )
+  query <- as.data.frame(query)
+  query <- query %>% dplyr::mutate(SNP = paste0(seqnames, ":", pos))
+  
+  sig.su <- merge(query, sig.su, by="SNP", all.y=T) %>% 
+    dplyr::arrange(seqnames, pos, P.Value) %>%
+    dplyr::select(SNP, RefSNP=RefSNP_id, Beta, Beta.SE, P.Value)
+
+  sig.su.info <- merge(sig.su, catalog, by.x="RefSNP", by.y="SNPS", all.x=T)
+  return(list(sig.su, sig.su.info))
+})
+names(results) <- files
+saveRDS(results, "clean_data/5_gwas/5f_gwas_analysis/sig.su.info.RDS")
+
+studies <- do.call(
+  rbind,
+  lapply(1:length(sig.su.info), function(i, x, n) {
+    tbl <- x[[i]][[2]]
+    tbl <- tbl %>% dplyr::mutate(Analysis=n[i]) %>% dplyr::filter(!is.na(PUBMEDID))
+    rownames(tbl) <- NULL
+    return(tbl)
+  }, x=sig.su.info, n=sapply(strsplit(files, "\\."), function(x) x[1]))
+) %>% dplyr::arrange(P.Value)
+write.csv(studies, "clean_data/5_gwas/5f_gwas_analysis/previous.studies.csv", row.names=F)
+```
+
+```{r}
+sub.files <- files[grep("A|B", files)]
+eigen.files <- list.files(path="clean_data/5_gwas/5a_gwas_results/", pattern="\\.ps$")
+eigen.files <- eigen.files[-grep("A|B|Case", eigen.files)]
+
+sub.snps <- lapply(results[sub.files], function(x) unique(x[[1]] %>% dplyr::select(SNP, Beta, Beta.SE, P.Value)))
+
+p.vals <- lapply(1:2, function(s) {
+  lapply(eigen.files, function(x) {
+    
+    sub.sug <- sub.snps[[s]]
+    cat(x, "\n")
+    sig <- read.table(paste0("clean_data/5_gwas/5a_gwas_results/", x), header=F, sep="\t", stringsAsFactors=F)
+    colnames(sig) <- c("SNP", "Beta", "Beta.SE", "P.Value")
+    rownames(sig) <- sig$SNP
+    sig <- sig[sub.sug$SNP,]
+    
+    sig$P.Value
+  })
+})
+p.vals <- lapply(p.vals, function(x) do.call(cbind, x))
+
+p.vals.a <- lapply(1:2, function(x) {
+  p <- p.vals[[x]]
+  s <- sub.snps[[x]]
+  rownames(p) <- s$SNP
+  colnames(p) <- sapply(strsplit(eigen.files, "\\."), function(y) y[1])
+  return(p)
+})
+
+# Sort the SNPs by CHR first and then BP
+# Can't be done by a simple sort because SNP is a character field
+sort.order <- lapply(1:2, function(s) {
+  apply(
+    data.frame(do.call(rbind, strsplit(rownames(p.vals.a[[s]]), ":")), stringsAsFactors=F) %>% 
+      dplyr::mutate(X1=as.numeric(X1), X2=as.numeric(X2)) %>% 
+      dplyr::arrange(X1, X2), 
+    1, 
+    function(x) paste0(x, collapse=":")
+  )
+})
+
+# svg("results/5_gwas/subtype.A.su.eigens.heatmap.svg", width=1000, height=600)
+# pheatmap(
+#   t(-log10(p.vals.a[[1]][sort.order[[1]],])),
+#   cluster_cols=F,
+#   border_color=NA,
+#   breaks=seq(0, 6, length.out=100),
+#   color=colorRampPalette(brewer.pal(9, "Greens"))(100)
+# )
+# dev.off()
+
+png("results/5_gwas/subtype.A.su.eigens.heatmap.png", width=1000, height=600)
+pheatmap(
+  t(-log10(p.vals.a[[1]][sort.order[[1]],])),
+  cluster_cols=F,
+  border_color=NA,
+  breaks=seq(0, 6, length.out=100),
+  color=colorRampPalette(brewer.pal(9, "Greens"))(100)
+)
+dev.off()
+
+# svg("results/5_gwas/subtype.B.su.eigens.heatmap.svg", width=1000, height=600)
+# pheatmap(
+#   t(-log10(p.vals.a[[2]][sort.order[[2]],])),
+#   cluster_cols=F,
+#   border_color=NA,
+#   breaks=seq(0, 12, length.out=100),
+#   color=colorRampPalette(brewer.pal(9, "Oranges"))(100)
+# )
+# dev.off()
+
+png("results/5_gwas/subtype.B.su.eigens.heatmap.png", width=1000, height=600)
+pheatmap(
+  t(-log10(p.vals.a[[2]][sort.order[[2]],])),
+  cluster_cols=F,
+  border_color=NA,
+  breaks=seq(0, 12, length.out=100),
+  color=colorRampPalette(brewer.pal(9, "Oranges"))(100)
+)
+dev.off()
+
+saveRDS(p.vals.a, "clean_data/5_gwas/5f_gwas_analysis/sig.su.eigens.RDS")
+
+write.csv(p.vals.a[[1]][sort.order[[1]],], "clean_data/5_gwas/5f_gwas_analysis/sig.su.eigens.A.csv", row.names=F)
+write.csv(p.vals.a[[2]][sort.order[[2]],], "clean_data/5_gwas/5f_gwas_analysis/sig.su.eigens.B.csv", row.names=F)
+```
+

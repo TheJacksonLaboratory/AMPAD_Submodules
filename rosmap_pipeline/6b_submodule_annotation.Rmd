@@ -1,0 +1,302 @@
+---
+title: "Submodule Annotation"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+
+```{r}
+eigengenes <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_eigengenes.RDS")
+submodules <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_labels.RDS")
+submodule.genes <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_sig_genes.RDS")
+```
+
+Pathway Enrichment
+------------------
+
+Here, I generate annotations for each submodule using KEGG, GO, and Reactome terms/pathways. For each, I also run Gene Set Enrichment, 
+
+```{r}
+annots <- lapply(submodules, function(submodule) {
+  # Get significant genes for submodule
+  sig.genes <- subset(submodule.genes, Submodule == submodule)
+  sig.genes.map <- bitr(sig.genes$Gene, fromType="ENSEMBL", toType="ENTREZID", OrgDb=org.Hs.eg.db)
+  sig.genes <- merge(sig.genes, sig.genes.map, by.x="Gene", by.y="ENSEMBL")
+  sig.genes <- sig.genes %>% dplyr::arrange(desc(Value))
+  
+  # Generate gene list
+  gene.list <- sig.genes$Value
+  names(gene.list) <- sig.genes$ENTREZID
+  
+  # Run KEGG enrichment and Gene Set enrichment using correlation with module eigengene
+  kegg <- enrichKEGG(names(gene.list), keyType="ncbi-geneid", organism="hsa", pvalueCutoff=0.2, pAdjustMethod="BH", qvalueCutoff=0.1)
+  kegg.gse <- gseKEGG(gene.list, organism="hsa", keyType="ncbi-geneid", minGSSize=1, pvalueCutoff=0.5)
+  
+  # Annotate IDs with HGNC symbols
+  kegg <- as.data.frame(kegg)
+  kegg$geneSymbol <- character(nrow(kegg))
+  kegg.gse <- as.data.frame(kegg.gse)
+  kegg.gse$geneSymbol <- character(nrow(kegg.gse))
+  
+  if (nrow(kegg) > 0) {
+    kegg$geneSymbol <- sapply(
+      lapply(
+        strsplit(kegg$geneID, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  if (nrow(kegg.gse) > 0) {
+    kegg.gse$geneSymbol <- sapply(
+      lapply(
+        strsplit(kegg.gse$core_enrichment, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  
+  # Run GO enrichment and Gene Set enrichment using correlation with module eigengene
+  go <- enrichGO(names(gene.list), OrgDb=org.Hs.eg.db, keyType="ENTREZID", pvalueCutoff=0.05, minGSSize=1)
+  go.gse <- gseGO(gene.list, OrgDb=org.Hs.eg.db, keyType="ENTREZID", minGSSize=1, pvalueCutoff=0.25)
+  
+  # Annotate IDs with HGNC symbols
+  go <- as.data.frame(go)
+  go$geneSymbol <- character(nrow(go))
+  go.gse <- as.data.frame(go.gse)
+  go.gse$geneSymbol <- character(nrow(go.gse))
+  
+  if (nrow(go) > 0) {
+    go$geneSymbol <- sapply(
+      lapply(
+        strsplit(go$geneID, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  if (nrow(go.gse) > 0) {
+    go.gse$geneSymbol <- sapply(
+      lapply(
+        strsplit(go.gse$core_enrichment, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  
+  # Run Reactome pathway enrichment and Gene Set enrichment using correlation with module eigengene
+  react <- enrichPathway(names(gene.list), organism="human", pvalueCutoff=0.2, minGSSize=1)
+  react.gse <- gsePathway(gene.list, organism="human", minGSSize=1, pvalueCutoff=0.2)
+  
+  # Annotate IDs with HGNC symbols
+  react <- as.data.frame(react)
+  react$geneSymbol <- character(nrow(react))
+  react.gse <- as.data.frame(react.gse)
+  react.gse$geneSymbol <- character(nrow(react.gse))
+  
+  if (nrow(react) > 0) {
+    react$geneSymbol <- sapply(
+      lapply(
+        strsplit(react$geneID, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  if (nrow(react.gse) > 0) {
+    react.gse$geneSymbol <- sapply(
+      lapply(
+        strsplit(react.gse$core_enrichment, "/"), 
+        function(x) bitr(x, fromType="ENTREZID", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL),
+      function(x) paste0(x, collapse="/")
+    )
+  }
+  
+  return(list(KEGG=kegg, KEGG.GSE=kegg.gse, GO=go, GO.GSE=go.gse, Reactome=react, Reactome.GSE=react.gse))
+})
+names(annots) <- unlist(submodules)
+saveRDS(annots, "clean_data/6_submodule_annotation/rosmap_submodule_annots.RDS")
+```
+
+DLPFCturquoise_1
+----------------
+
+Common annotation themes include catalytic activities on RNA and tRNA. Many of the genes also localize to the mitochondria and may be involved in lipid metabolism. 
+
+This submodule is annotated as **mitochondrial fatty acid metabolism**. Important terms include "oxidoreductase activity, acting on the CH-CH group of donors" (GO:0016627), "coenzyme binding" (GO:0050662), "heme biosynthesis" (R-HSA-189451), and "mitochondrial translation" (R-HSA-5368287).
+
+```{r}
+annots$DLPFCturquoise_1$KEGG
+annots$DLPFCturquoise_1$KEGG.GSE
+annots$DLPFCturquoise_1$GO
+annots$DLPFCturquoise_1$GO.GSE
+annots$DLPFCturquoise_1$Reactome
+annots$DLPFCturquoise_1$Reactome.GSE
+```
+
+DLPFCturquoise_2
+----------------
+
+Common annotations include cellular response to stress and cell cycle progression. Many of the genes are involved in MAPK/EGFR signaling, Wnt signalling, and ErbB signaling.
+
+This submodule is annotated as **cellular stress response and cell cycle progression**. Important terms include "ErbB signaling pathway" (hsa04012), "MAPK signaling pathway" (hsa04010), "neurotrophin signaling pathway" (hsa04722), "cellular senscence" (hsa04218), "heat shock protein binding" (GO:0031072), "unfolded protein binding" (GO:0051082), "chaperone binding" (GO:0051087), "misfolded protein binding" (GO:0051787), "p53 binding" (GO:0002039), "cellular response to heat stress" (R-HSA-3371556), and "cellular responses to stress" (R-HSA-2262752).
+
+```{r}
+annots$DLPFCturquoise_2$KEGG
+annots$DLPFCturquoise_2$KEGG.GSE
+annots$DLPFCturquoise_2$GO
+annots$DLPFCturquoise_2$GO.GSE
+annots$DLPFCturquoise_2$Reactome
+annots$DLPFCturquoise_2$Reactome.GSE
+```
+
+DLPFCblue_1
+-----------
+
+This submodule contains a large number of markers specific to astrocytes. Common annotations include amino acid metabolism, fatty acid metabolism, glycolysis and gluconeogenesis, transporter activity, signal transduction, and neurotransmitter uptake. Most genes are involved in metabolic pathways related to amino acids and lipids.
+
+This submodule is annotated as **astrocyte metabolism**. Important terms include "fatty acid degradation" (hsa00071), "fatty acid metabolism" (hsa01212), "glycolysis / gluconeogenesis" (hsa00010), "fatty acid metabolism" (R-HSA-8978868), "mitochondrial fatty acid beta-oxidation" (R-HSA-77289), and "branched-chain amino acid catabolism" (R-HSA-70895).
+
+```{r}
+annots$DLPFCblue_1$KEGG
+annots$DLPFCblue_1$KEGG.GSE
+annots$DLPFCblue_1$GO
+annots$DLPFCblue_1$GO.GSE
+annots$DLPFCblue_1$Reactome
+annots$DLPFCblue_1$Reactome.GSE
+```
+
+DLPFCblue_2
+-----------
+
+This submodule contains a large number of markers specific to endothelial cells. Common annotations include TNF signaling, PI3K-AKT signaling, NF-kappa B signaling, AGE-RAGE signaling, JAK-STAT signaling, leukocyte transendothelial migration, osteoclast differentiation, cytokine-cytokine receptor interactions, apoptosis, TLR4 binding, integrin binding, interleukin signaling, and interferon signaling.
+
+This submodule is annotated as **endothelial cell cytokine interactions**. Important terms include "TNF signaling pathway" (hsa04668), "PI3K-Akt signaling pathway" (hsa04151), "MAPK signaling pathway" (hsa04010), "NF-kappa B signaling pathway" (hsa04064), "AGE-RAGE signaling pathway in diabetic complications" (hsa04933), "JAK-STAT signaling pathway" (hsa4630), "cell adhesion molecule binding" (GO:0050839), "Toll-like receptor 4 binding" (GO:0035662), "signaling by interleukins" (R-HSA-449147), "interferon signaling" (R-HSA-913531), and "integrin cell surface interactions" (R-HSA-216083).
+
+```{r}
+annots$DLPFCblue_2$KEGG
+annots$DLPFCblue_2$KEGG.GSE
+annots$DLPFCblue_2$GO
+annots$DLPFCblue_2$GO.GSE
+annots$DLPFCblue_2$Reactome
+annots$DLPFCblue_2$Reactome.GSE
+```
+
+DLPFCblue_3
+-----------
+
+This submodule contains a large number of markers specific to microglia. Common annotations include osteoclast differentiation, phagosome, complement and coagulation cascades, Th17 cell differentiation, cytokine receptor activity, and neutrophils. 
+
+This submodule is annotated as **microglial activation**. Important terms include "osteoclast differentiation" (hsa04380), "Fc gamma R-mediated phagocytosis" (hsa04666), "complement and coagulation cascades" (hsa04610), "immune system process" (GO:0002376), "neutrophil degranulation" (R-HSA-698695), and "signaling by interleukins" (R-HSA-449147).
+
+```{r}
+annots$DLPFCblue_3$KEGG
+annots$DLPFCblue_3$KEGG.GSE
+annots$DLPFCblue_3$GO
+annots$DLPFCblue_3$GO.GSE
+annots$DLPFCblue_3$Reactome
+annots$DLPFCblue_3$Reactome.GSE
+```
+
+DLPFCblue_4
+-----------
+
+This submodule contains a subset of markers that are specific to astrocytes. Common annotations include complement and coagulation cascades, antigen processing and presentation, and cell adhesion molecule binding.
+
+This submodule is annotated as **astrocyte and microglia activation**. Important terms include "complement and coagulation cascades" (hsa04610), "cell adhesion molecule binding" (GO:0050839), and "regulation of complement cascade" (R-HSA-977606). 
+
+```{r}
+annots$DLPFCblue_4$KEGG
+annots$DLPFCblue_4$KEGG.GSE
+annots$DLPFCblue_4$GO
+annots$DLPFCblue_4$GO.GSE
+annots$DLPFCblue_4$Reactome
+annots$DLPFCblue_4$Reactome.GSE
+```
+
+DLPFCbrown_1
+------------
+
+This submodule contains a large number of markers specific to oligodendrocytes. Common annotations include actin binding, ether lipid metabolism, cell adhesion molecules, sphingolipid metabolism, endocytosis, and lysosome. 
+
+This submodule is annotated as **oligodendrocytic myelination and lysosomal activity**. Important terms include "ether lipid metabolism" (hsa00565), "sphingolipid metabolism" (hsa00600), "Fc gamma R-mediated phagocytosis" (hsa04666), "endocytosis" (hsa04144), and "lysosome" (hsa04142). 
+
+```{r}
+annots$DLPFCbrown_1$KEGG
+annots$DLPFCbrown_1$KEGG.GSE
+annots$DLPFCbrown_1$GO
+annots$DLPFCbrown_1$GO.GSE
+annots$DLPFCbrown_1$Reactome
+annots$DLPFCbrown_1$Reactome.GSE
+```
+
+DLPFCbrown_2
+------------
+
+Common annotations include EGFR tyrosine kinase inhibitor resistance, phospholipase D signaling, PI3K-Akt signaling, neurotrophin signaling, intracellular actin dynamics, and Rho GTPase signaling.
+
+This submodule is annotated as **cytoskeletal reorganization**. Important terms include "phospholipase D signaling pathway" (hsa04072), "regulation of actin cytoskeleton" (hsa04810), "Rho GTPase binding" (GO:001048), and "Rho GTPase cycle" (R-HSA-194840).
+
+```{r}
+annots$DLPFCbrown_2$KEGG
+annots$DLPFCbrown_2$KEGG.GSE
+annots$DLPFCbrown_2$GO
+annots$DLPFCbrown_2$GO.GSE
+annots$DLPFCbrown_2$Reactome
+annots$DLPFCbrown_2$Reactome.GSE
+```
+
+DLPFCyellow_1
+-------------
+
+This submodule contains a large number of markers specific to neurons. Common annotations include long-term potentiation, synaptic vesicle cycle, neurotransmitters, and axon guidance.
+
+This submodule is annotated as **synaptic transmission**. Important terms include "synaptic vesicle cycle" (hsa04721), "ion gated channel activity" (GO:0022839), "transmission across chemical synapses" (R-HSA-112315), and "protein-protein interactions at synapses" (R-HSA-6794362).
+
+```{r}
+annots$DLPFCyellow_1$KEGG
+annots$DLPFCyellow_1$KEGG.GSE
+annots$DLPFCyellow_1$GO
+annots$DLPFCyellow_1$GO.GSE
+annots$DLPFCyellow_1$Reactome
+annots$DLPFCyellow_1$Reactome.GSE
+```
+
+DLPFCyellow_2
+-------------
+
+Common annotations include endocytosis, tight junction, axon guidance, and potassium channel activity.
+
+This submodule is annotated as **endocytosis and potassium channel activity**. Important terms include "endocytosis" (hsa04144), "potassium channel activity" (GO:0005267), "cation channel activity" (GO:0005261) and "potassium channels" (R-HSA-1296071).
+
+```{r}
+annots$DLPFCyellow_2$KEGG
+annots$DLPFCyellow_2$KEGG.GSE
+annots$DLPFCyellow_2$GO
+annots$DLPFCyellow_2$GO.GSE
+annots$DLPFCyellow_2$Reactome
+annots$DLPFCyellow_2$Reactome.GSE
+```
+
+DLPFCyellow_3
+-------------
+
+This submodule contains a subset of markers that are specific to neurons. No annotations were generated using KEGG, GO, or Reactome.
+Many of the genes are related to stress response and RNA modification.
+
+This submodule is annotated as **neuronal response to stress**. Important genes include MSH2 (DNA repair), PSMA5 (proteasome), CIPAIN1 (inhibitor of apoptosis), MCM4 (mini-chromosome maintenance protein), and TOR1A (heat shock response).
+
+```{r}
+annots$DLPFCyellow_3$KEGG
+annots$DLPFCyellow_3$KEGG.GSE
+annots$DLPFCyellow_3$GO
+annots$DLPFCyellow_3$GO.GSE
+annots$DLPFCyellow_3$Reactome
+annots$DLPFCyellow_3$Reactome.GSE
+```

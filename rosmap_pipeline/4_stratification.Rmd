@@ -1,0 +1,778 @@
+---
+title: "Stratification"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(NbClust)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(cluster)
+library(biwt)
+
+source("../utils/stratification_helpers.R")
+source("../utils/plot_theme.R")
+```
+
+```{r load_data}
+eigengenes <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_eigengenes.RDS")
+
+module.names <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_labels.RDS")
+module.names <- unlist(module.names)
+
+sig.genes <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_sig_genes.RDS")
+
+cleaned <- readRDS("clean_data/1_rosmap_cleaning/rosmap_cleaned.RDS")
+
+# Separate into cases and controls
+eigengenes.cases <- eigengenes[eigengenes$Diagnosis=="AD",]
+eigengenes.controls <- eigengenes[eigengenes$Diagnosis=="CONTROL",]
+```
+
+Generate Matrix of Submodule Eigengenes
+---------------------------------------
+
+Here I created a matrix of eigengene expression data. I created separate matrices for cases and controls as well as a combined expression matrix.
+
+```{r}
+# Eigengene expression of cases
+module.vecs.cases <- eigengenes.cases[,module.names]
+# Eigengene expression of controls and MCIs
+module.vecs.controls <- eigengenes.controls[,module.names]
+# Total eigengene expression
+module.vecs <- eigengenes[,module.names]
+```
+
+Cluster Analysis
+----------------
+
+I performed cluster analysis on the eigengene expression data. I used the `NbClust` package, which uses democratized results across 30 different mathematical indices to determine the optimal number of clusters. I tested one reallocation method - K-Means - and three agglomerative methods - Ward D2, McQuitty (WPGMA), and Average (UPGMA). I used silhouettes as a method of determining the optimal clustering strategy. I used Tukey's Biweight to determine relations between patients rather than Pearson correlations or Euclidean distances since Tukey's Biweight is considered a robust metric.
+
+```{r}
+# Generate a distance matrix based on Tukey's Biweight
+tukey.dist <- dist(biwt.cor(module.vecs.cases)) 
+
+# Methods tested
+methods <- c("kmeans", "average", "mcquitty", "ward.D2")
+nbc.res <- list()
+silhouettes <- list()
+
+set.seed(23498239)
+
+for (m in methods) {
+  
+  nbc.res[[m]] <- NbClust(
+    module.vecs.cases,
+    diss=tukey.dist,
+    distance=NULL,
+    min.nc=2,
+    max.nc=15,
+    method=m,
+    index="all"
+  )
+  
+  s <- silhouette(nbc.res[[m]]$Best.partition, tukey.dist)
+  s.m <- data.frame(matrix(as.vector(s), nrow=nrow(s)))
+  silhouettes[[m]] <- s.m
+  colnames(s.m) <- dimnames(s)[[2]]
+  s.m <- s.m %>% 
+    dplyr::arrange(cluster, sil_width) %>%
+    dplyr::mutate(ID=1:nrow(s))
+  s.m$cluster <- as.factor(s.m$cluster)
+  print(
+    ggplot(s.m) +
+      geom_bar(aes(x=ID, y=sil_width, fill=cluster), stat="identity", width=1) +
+      scale_fill_brewer(palette="Dark2") +
+      labs(x="", y="Silhouette Width", fill="Cluster") +
+      coord_flip() +
+      ylim(-0.5, 0.8) +
+      annotate("text", x=151, y=-0.3, label=paste0("Mean Silhouette Width: ", round(mean(s.m$sil_width), 4))) +
+      basic_theme_big +
+      theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+  )
+  ggsave(paste0("results/4_stratification/silhouette_", m, ".svg"), width=8, height=8)
+}
+```
+
+Looking at the results, I decided to use K-means since it has the best silhouette results. All four methods predicted 2 clusters.
+
+```{r}
+# Choose K-Means for the rest of the analysis
+nbc.res <- nbc.res[["kmeans"]]
+
+# Create a patient to subtype map
+subtypes <- data.frame(
+  Patient=rownames(module.vecs),
+  Subtype=c("A", "B")[as.numeric(nbc.res$Best.partition[rownames(module.vecs)])],
+  stringsAsFactors=F
+)
+subtypes$Subtype[is.na(subtypes$Subtype)] = "Control"
+subtypes$Subtype <- factor(subtypes$Subtype, levels=c("A", "B", "Control"))
+rownames(subtypes) <- subtypes$Patient
+
+saveRDS(nbc.res, "clean_data/4_stratification/rosmap_clustering.RDS")
+saveRDS(subtypes, "clean_data/4_stratification/rosmap_subtypes_map.RDS")
+
+# Run PCA to splay our data
+pca <- prcomp(module.vecs.cases)
+plot.data <- as.data.frame(pca$x[,1:2])
+plot.data$Subtype <- subtypes[rownames(plot.data),"Subtype"]
+
+ggplot(data=plot.data) +
+  geom_point(aes(PC1, PC2, color=Subtype), size=I(3), alpha=0.6) +
+  guides(color=guide_legend(title="Subtype")) +
+  scale_color_brewer(palette="Dark2") +
+  guides(size=FALSE) +
+  basic_theme_big
+ggsave(filename="results/4_stratification/rosmap_clustering.svg", width=8, height=7.5)
+```
+
+Stratification Matrix
+---------------------
+
+I use a heatmap-like matrix to demonstrate how the eigengenes associate with specific subtypes generated in the clustering process.
+
+```{r}
+strat.mtx <- do.call(rbind, 
+  lapply(
+    split(module.vecs[subtypes$Patient,], subtypes$Subtype),
+    function(x) apply(x, 2, mean)
+  )
+)
+strat.mtx <- strat.mtx[nrow(strat.mtx):1,]
+strat.mtx <- t(apply(strat.mtx, 1, function(x) x / apply(abs(strat.mtx), 2, max)))
+
+p <- plot.strat(strat.mtx, main="", xlab="", ylab="", text=F)
+p$layers <- p$layers[1]
+p <- p + guides(fill=F) +
+  theme(
+    axis.ticks.x=element_blank(), 
+    axis.ticks.y=element_blank(),
+    panel.grid.major=element_blank(),
+    panel.border=element_blank()
+  )
+print(p)
+ggsave(file="results/4_stratification/subtypes_heatmap.svg", plot=p, width=12, height=5)
+```
+
+I also generated a heatmap based on the Reactome and Kegg annotations of individual submodules. Annotations with more than one submodule were combined using SVD. 
+
+```{r}
+eigens <- annot.eigens(eigengenes)
+
+heat.mtx <- do.call(
+  rbind, 
+  lapply(
+    split(eigens[subtypes$Patient,], subtypes$Subtype), 
+    function(x) apply(x, 2, mean)
+  )
+)
+heat.mtx <- heat.mtx[nrow(heat.mtx):1,]
+heat.mtx <- t(apply(heat.mtx, 1, function(x) x / apply(abs(heat.mtx), 2, max)))
+
+p <- plot.strat(heat.mtx, main="", xlab="", ylab="", text=F)
+p$layers <- p$layers[1]
+p <- p + guides(fill=F) +
+  theme(
+    axis.ticks.x=element_blank(), 
+    axis.ticks.y=element_blank(),
+    panel.grid.major=element_blank(),
+    panel.border=element_blank()
+  )
+print(p)
+```
+
+I used cell type specific markers from McKenzie et al. to identify submodules that contain cell type specific signatures.
+
+```{r}
+eigens <- cell.eigens(eigengenes)
+
+heat.mtx <- do.call(
+  rbind, 
+  lapply(
+    split(eigens[subtypes$Patient,], subtypes$Subtype), 
+    function(x) apply(x, 2, mean)
+  )
+)
+heat.mtx <- heat.mtx[nrow(heat.mtx):1,]
+heat.mtx <- t(apply(heat.mtx, 1, function(x) x / apply(abs(heat.mtx), 2, max)))
+
+p <- plot.strat(heat.mtx, main="", xlab="", ylab="", text=F)
+p$layers <- p$layers[1]
+p <- p + guides(fill=F) +
+  theme(
+    axis.ticks.x=element_blank(), 
+    axis.ticks.y=element_blank(),
+    panel.grid.major=element_blank(),
+    panel.border=element_blank()
+  )
+print(p)
+```
+
+Finally, I generated a heatmap to compare controls, MCIs, and cases.
+
+```{r}
+strat.mtx <- do.call(rbind, 
+  lapply(
+    split(module.vecs[cleaned$Patient,], cleaned$Tissue.Diagnosis),
+    function(x) apply(x, 2, mean)
+  )
+)
+strat.mtx <- strat.mtx[c("CONTROL", "OTHER", "AD"),]
+strat.mtx <- t(apply(strat.mtx, 1, function(x) x / apply(abs(strat.mtx), 2, max)))
+
+p <- plot.strat(strat.mtx, main="", xlab="", ylab="", text=F)
+p$layers <- p$layers[1]
+p <- p + guides(fill=F) +
+  theme(
+    axis.ticks.x=element_blank(), 
+    axis.ticks.y=element_blank(),
+    panel.grid.major=element_blank(),
+    panel.border=element_blank()
+  )
+print(p)
+#ggsave(file="results/4_stratification/subtypes_heatmap.svg", plot=p, width=12, height=5)
+```
+
+Subtype Specificity Metric
+--------------------------
+
+I generated the submodule specificity metric here. I save it for future use in R as well as files that follow PLINK standards to run through EMMAX.
+
+```{r}
+subs <- as.character(unique(subtypes$Subtype[subtypes$Subtype %in% LETTERS]))
+subs <- subs[ordered(subs)]
+
+centroids <- lapply(
+  split(module.vecs[subtypes$Patient,], subtypes$Subtype)[subs],
+  function(x) { apply(x, 2, mean) }
+)
+patient.subtypes <- as.data.frame(cbind(
+  rownames(module.vecs),
+  as.character(subtypes[rownames(module.vecs),"Subtype"]),
+  do.call(
+    cbind,
+    lapply(
+      centroids,
+      function(x) module.vecs %>%
+        apply(., 1, function(v) sqrt(sum((x-v)^2)))
+    )
+  )
+))
+colnames(patient.subtypes) <- c("Patient", "Subtype", "A", "B")
+patient.subtypes$A <- as.numeric(as.character(patient.subtypes$A))
+patient.subtypes$B <- as.numeric(as.character(patient.subtypes$B))
+
+saveRDS(patient.subtypes, "clean_data/4_stratification/rosmap_patient_subtypes.RDS")
+```
+
+Covariate Analysis
+------------------
+
+I tested if any covariates were enriched in any given subtype and may explain the variation in gene expression that led to the subtyping.
+
+```{r}
+# Sex
+trait <- factor(c("Female", "Male")[cleaned[rownames(subtypes),"Sex"]], levels=c("Female", "Male"))
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_bar(aes(x=Subtype, fill=Trait), position=position_fill(), color="black") +
+  scale_fill_brewer(palette="Set3") +
+  labs(x="", y="Proportion", fill="Sex") + 
+  basic_theme_big +
+  theme(legend.position="bottom")
+ggsave(filename="results/4_stratification/trait_sex_by_subtype.svg", width=7, height=7)
+
+# APOE4 Status
+trait <- factor(c("None", "Heterozygous", "Homozygous")[cleaned[rownames(subtypes),"apoe_genotype"]+1])
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_bar(aes(x=Subtype, fill=Trait), position=position_fill(), color="black") +
+  scale_fill_brewer(palette="Set3") +
+  labs(x="", y="Proportion", fill="APOE4 Status") + 
+  basic_theme_big +
+  theme(legend.position="bottom")
+ggsave(filename="results/4_stratification/trait_apoe4_by_subtype.svg", width=7, height=7)
+
+# Education
+trait <- cleaned[rownames(subtypes), "educ"]
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Subtype, y=Trait, fill=Subtype)) +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=F) +
+  labs(x="", y="Years of Education") +
+  basic_theme_big
+ggsave(filename="results/4_stratification/trait_education_by_subtype.svg", width=7, height=7)
+
+# Prepare Synapse Covariates
+syn.clin <- read.csv("raw_data/Synapse_Rosmap_Clinical_Data.csv", header=T, stringsAsFactors=F)
+key.map <- read.csv("raw_data/ROSMAP_IDkey.csv", header=T, stringsAsFactors=F)
+key.map <- key.map %>% dplyr::select(projid, rnaseq_id) %>% unique
+clinical.vars <- merge(syn.clin, key.map, all.x=T, by="projid") %>%
+  dplyr::filter(rnaseq_id != "")
+rownames(clinical.vars) <- clinical.vars$rnaseq_id
+
+# Ages of different things
+trait <- clinical.vars[rownames(subtypes), "age_at_visit_max"]
+trait[trait == "90+"] = "90" # Age-censored, assume just 90 for now
+trait <- as.numeric(trait)
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Subtype, y=Trait, fill=Subtype)) +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=F) +
+  labs(x="", y="Age at Last Visit") +
+  basic_theme_big
+ggsave(filename="results/4_stratification/trait_age_at_last_visit.svg", width=7, height=7)
+
+trait <- clinical.vars[rownames(subtypes), "age_death"]
+trait[trait == "90+"] = "90" # Age-censored, assume just 90 for now
+trait <- as.numeric(trait)
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Subtype, y=Trait, fill=Subtype)) +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=F) +
+  labs(x="", y="Age at First Diagnosis") +
+  basic_theme_big
+ggsave(filename="results/4_stratification/trait_age_at_first_dx.svg", width=7, height=7)
+
+# Braak Scores
+trait <- factor(clinical.vars[rownames(subtypes), "braaksc"], levels=1:6)
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_bar(aes(x=Subtype, fill=Trait), position=position_fill(), color="black") +
+  scale_fill_brewer(palette="Set3") +
+  labs(x="", y="Proportion", fill="Braak Stage") + 
+  basic_theme_big +
+  theme(legend.position="bottom")
+ggsave(filename="results/4_stratification/trait_braak_stage.svg", width=7, height=7)
+
+trait <- factor(clinical.vars[rownames(patient.subtypes), "braaksc"], levels=1:6)
+plot.data <- patient.subtypes
+plot.data$Trait <- trait
+plot.data <- reshape2::melt(plot.data, id.vars=c(1,2,5))
+colnames(plot.data)[4:5] <- c("SubtypeProfile", "Distance")
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Trait, y=log10(Distance), fill=SubtypeProfile)) +
+  guides(fill=F) +
+  labs(x="Braak Stage", y="log10(Distance from Subtype)") +
+  basic_theme_big
+ggsave(filename="results/4_stratification/distance_braak_stage.svg", width=7, height=7)
+
+# CERAD Scores
+trait <- factor(clinical.vars[rownames(subtypes), "ceradsc"], levels=1:4)
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_bar(aes(x=Subtype, fill=Trait), position=position_fill(), color="black") +
+  scale_fill_brewer(palette="Set3") +
+  labs(x="", y="Proportion", fill="CERAD Stage") + 
+  basic_theme_big +
+  theme(legend.position="bottom")
+ggsave(filename="results/4_stratification/trait_cerad_score.svg", width=7, height=7)
+
+trait <- factor(clinical.vars[rownames(patient.subtypes), "ceradsc"], levels=1:4)
+plot.data <- patient.subtypes
+plot.data$Trait <- trait
+plot.data <- reshape2::melt(plot.data, id.vars=c(1,2,5))
+colnames(plot.data)[4:5] <- c("SubtypeProfile", "Distance")
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Trait, y=log10(Distance), fill=SubtypeProfile)) +
+  guides(fill=F) +
+  labs(x="CERAD Score", y="log10(Distance from Subtype)") +
+  basic_theme_big
+ggsave(filename="results/4_stratification/distance_cerad_score.svg", width=7, height=7)
+
+# Cognitive Diagnosis
+trait <- factor(clinical.vars[rownames(subtypes), "cogdx"], levels=1:6)
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_bar(aes(x=Subtype, fill=Trait), position=position_fill(), color="black") +
+  scale_fill_brewer(palette="Set3") +
+  labs(x="", y="Proportion", fill="Cognitive Diagnosis") + 
+  basic_theme_big +
+  theme(legend.position="bottom")
+ggsave(filename="results/4_stratification/trait_cogdx.svg", width=7, height=7)
+
+trait <- factor(clinical.vars[rownames(patient.subtypes), "cogdx"], levels=1:6)
+plot.data <- patient.subtypes
+plot.data$Trait <- trait
+plot.data <- reshape2::melt(plot.data, id.vars=c(1,2,5))
+colnames(plot.data)[4:5] <- c("SubtypeProfile", "Distance")
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Trait, y=log10(Distance), fill=SubtypeProfile)) +
+  guides(fill=F) +
+  labs(x="CERAD Score", y="log10(Distance from Subtype)") +
+  basic_theme_big
+ggsave(filename="results/4_stratification/distance_cogdx.svg", width=7, height=7)
+
+# Prepare Joey's data
+joey.clin <- read.delim("../raw_data/Joey_Rosmap_Cognitive_Scores_Slopes.txt", header=T, stringsAsFactors=F)
+key.map <- read.csv("raw_data/ROSMAP_IDkey.csv", header=T, stringsAsFactors=F)
+key.map <- key.map %>% dplyr::select(projid, rnaseq_id) %>% unique
+clinical.vars <- merge(joey.clin, key.map, all.x=T, by="projid") %>%
+  dplyr::filter(rnaseq_id != "")
+rownames(clinical.vars) <- clinical.vars$rnaseq_id
+
+# Memory Decline
+trait <- clinical.vars[rownames(subtypes), "slope_nmem"]
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Subtype, y=Trait, fill=Subtype)) +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=F) +
+  labs(x="", y="Rate of Memory Decline") +
+  basic_theme_big
+ggsave(filename="results/4_stratification/trait_memory_decline.svg", width=7, height=7)
+t1 <- plot.data[plot.data$Subtype == "A", "Trait"]
+t2 <- plot.data[plot.data$Subtype == "B", "Trait"]
+t.test(t1, t2)
+
+# Visuospatial Decline
+trait <- clinical.vars[rownames(subtypes), "slope_nvsp"]
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Subtype, y=Trait, fill=Subtype)) +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=F) +
+  labs(x="", y="Rate of Visuospatial Decline") +
+  basic_theme_big
+ggsave(filename="results/4_stratification/trait_visuospatial_decline.svg", width=7, height=7)
+t1 <- plot.data[plot.data$Subtype == "A", "Trait"]
+t2 <- plot.data[plot.data$Subtype == "B", "Trait"]
+t.test(t1, t2)
+
+# Executive Function Decline
+trait <- clinical.vars[rownames(subtypes), "slope_nexf"]
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Subtype, y=Trait, fill=Subtype)) +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=F) +
+  labs(x="", y="Rate of Executive Function Decline") +
+  basic_theme_big
+ggsave(filename="results/4_stratification/trait_executive_function_decline.svg", width=7, height=7)
+t1 <- plot.data[plot.data$Subtype == "A", "Trait"]
+t2 <- plot.data[plot.data$Subtype == "B", "Trait"]
+t.test(t1, t2)
+
+# Language Decline
+trait <- clinical.vars[rownames(subtypes), "slope_nlan"]
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Subtype, y=Trait, fill=Subtype)) +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=F) +
+  labs(x="", y="Rate of Language Decline") +
+  basic_theme_big
+ggsave(filename="results/4_stratification/trait_language_decline.svg", width=7, height=7)
+t1 <- plot.data[plot.data$Subtype == "A", "Trait"]
+t2 <- plot.data[plot.data$Subtype == "B", "Trait"]
+t.test(t1, t2)
+```
+
+Generating Phenotypes for EMMAX
+-------------------------------
+
+I generated the `.pheno` file required specifically by EMMAX.
+
+```{r}
+# Load mapping from RNA Seq IDs to WGS IDs
+rosmap.ids <- read.csv("raw_data/ROSMAP_IDkey.csv", stringsAsFactors=F)
+
+# Load EMMAX .tfam file and order data by expected patients
+tfam <- read.table("raw_data/Rosmap_allSNPjointMAF05_Clean__TRANSPOSED_EMMAX.tfam")
+colnames(tfam) <- c("Family", "WGS.ID", "X1", "X2", "X3", "X4")
+
+# Use cases, controls, and MCIs
+subs <- subtypes
+
+# Merge data into subtype map by RNA Seq IDs
+emmax.pheno <- merge(subs, rosmap.ids, by.x="Patient", by.y="rnaseq_id") %>% 
+  dplyr::select(Patient, WGS.ID=wgs_id) %>% 
+  dplyr::filter(Patient %in% subs$Patient) %>%
+  unique
+
+# Merge data into patient subtype specificity metric data
+emmax.pheno <- merge(emmax.pheno, patient.subtypes, by.x="Patient", by.y="Patient") %>%
+  dplyr::select(Patient, WGS.ID, A, B) %>%
+  dplyr::filter(Patient %in% subs$Patient) %>%
+  unique
+
+# Merge data into eigengenes
+emmax.pheno <- merge(emmax.pheno, eigengenes, by.x="Patient", by.y="Patient") %>%
+  dplyr::select(Patient, WGS.ID, A, B, module.names) %>%
+  dplyr::filter(Patient %in% subs$Patient) %>%
+  unique
+
+# Remove any patients without WGS ID's (were not sequenced)
+mask <- emmax.pheno$WGS.ID != ""& !is.na(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno[mask,]
+
+# Align to TFAM file
+emmax.pheno <- merge(tfam, emmax.pheno, by.x="WGS.ID", by.y="WGS.ID", all.x=T) %>%
+  dplyr::select(c("WGS.ID", "A", "B", module.names))
+rownames(emmax.pheno) <- emmax.pheno$WGS.ID
+emmax.pheno <- emmax.pheno[tfam$WGS.ID,]
+
+# Create EMMAX format file
+# 1. Patient Family ID (same as patient ID since unrelated)
+# 2. Patient ID
+# 3. Phenotype
+wgs.id <- as.character(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno %>%
+  dplyr::select(c("A", "B", module.names))
+for (pheno in colnames(emmax.pheno)) {
+  write.table(
+    cbind(wgs.id, wgs.id, emmax.pheno[,pheno]),
+    file=paste0("clean_data/4_stratification/emmax_phenotypes/", pheno, ".pheno"),
+    quote=F, sep="\t", row.names=F, col.names=F
+  )
+}
+```
+
+EMMAX files were also generated containing only MCI and Case patients. 
+
+```{r}
+# Load mapping from RNA Seq IDs to WGS IDs
+rosmap.ids <- read.csv("raw_data/ROSMAP_IDkey.csv", stringsAsFactors=F)
+
+# Load EMMAX .tfam file and order data by expected patients
+tfam <- read.table("raw_data/Rosmap_allSNPjointMAF05_Clean__TRANSPOSED_EMMAX.tfam")
+colnames(tfam) <- c("Family", "WGS.ID", "X1", "X2", "X3", "X4")
+
+# Use only cases and MCIs
+subs <- subtypes[cleaned[subtypes$Patient,"Tissue.Diagnosis"] != "CONTROL",]
+
+# Merge data into subtype map by RNA Seq IDs
+emmax.pheno <- merge(subs, rosmap.ids, by.x="Patient", by.y="rnaseq_id") %>% 
+  dplyr::select(Patient, Subtype, WGS.ID=wgs_id) %>% 
+  dplyr::filter(Patient %in% subs$Patient) %>%
+  unique
+
+# Merge data into patient subtype specificity metric data
+emmax.pheno <- merge(emmax.pheno, patient.subtypes, by.x="Patient", by.y="Patient") %>%
+  dplyr::select(Patient, Subtype=Subtype.x, WGS.ID, A, B) %>%
+  dplyr::filter(Patient %in% subs$Patient) %>%
+  unique
+
+# Merge data into eigengenes
+emmax.pheno <- merge(emmax.pheno, eigengenes, by.x="Patient", by.y="Patient") %>%
+  dplyr::select(Patient, Subtype, WGS.ID, A, B, module.names) %>%
+  dplyr::filter(Patient %in% subs$Patient) %>%
+  unique
+
+# Remove any patients without WGS ID's (were not sequenced)
+mask <- emmax.pheno$WGS.ID != ""& !is.na(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno[mask,]
+
+# Align to TFAM file
+emmax.pheno <- merge(tfam, emmax.pheno, by.x="WGS.ID", by.y="WGS.ID", all.x=T) %>%
+  dplyr::select(c("WGS.ID", "A", "B", module.names))
+rownames(emmax.pheno) <- emmax.pheno$WGS.ID
+emmax.pheno <- emmax.pheno[tfam$WGS.ID,]
+
+# Create EMMAX format file
+# 1. Patient Family ID (same as patient ID since unrelated)
+# 2. Patient ID
+# 3. Phenotype
+wgs.id <- as.character(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno %>%
+  dplyr::select(c("A", "B", module.names))
+for (pheno in colnames(emmax.pheno)) {
+  write.table(
+    cbind(wgs.id, wgs.id, emmax.pheno[,pheno]),
+    file=paste0("clean_data/4_stratification/emmax_phenotypes/", pheno, "_Case_MCI.pheno"),
+    quote=F, sep="\t", row.names=F, col.names=F
+  )
+}
+```
+
+EMMAX files were also created for only Cases. 
+
+```{r}
+# Load mapping from RNA Seq IDs to WGS IDs
+rosmap.ids <- read.csv("raw_data/ROSMAP_IDkey.csv", stringsAsFactors=F)
+
+# Load EMMAX .tfam file and order data by expected patients
+tfam <- read.table("raw_data/Rosmap_allSNPjointMAF05_Clean__TRANSPOSED_EMMAX.tfam")
+colnames(tfam) <- c("Family", "WGS.ID", "X1", "X2", "X3", "X4")
+
+# Use only cases
+subs <- subtypes[cleaned[subtypes$Patient,"Tissue.Diagnosis"] == "AD",]
+
+# Merge data into subtype map by RNA Seq IDs
+emmax.pheno <- merge(subs, rosmap.ids, by.x="Patient", by.y="rnaseq_id") %>% 
+  dplyr::select(Patient, Subtype, WGS.ID=wgs_id) %>% 
+  dplyr::filter(Patient %in% subs$Patient) %>%
+  unique
+
+# Merge data into patient subtype specificity metric data
+emmax.pheno <- merge(emmax.pheno, patient.subtypes, by.x="Patient", by.y="Patient") %>%
+  dplyr::select(Patient, Subtype=Subtype.x, WGS.ID, A, B) %>%
+  dplyr::filter(Patient %in% subs$Patient) %>%
+  unique
+
+# Merge data into eigengenes
+emmax.pheno <- merge(emmax.pheno, eigengenes, by.x="Patient", by.y="Patient") %>%
+  dplyr::select(Patient, Subtype, WGS.ID, A, B, module.names) %>%
+  dplyr::filter(Patient %in% subs$Patient) %>%
+  unique
+
+# Remove any patients without WGS ID's (were not sequenced)
+mask <- emmax.pheno$WGS.ID != ""& !is.na(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno[mask,]
+
+# Align to TFAM file
+emmax.pheno <- merge(tfam, emmax.pheno, by.x="WGS.ID", by.y="WGS.ID", all.x=T) %>%
+  dplyr::select(c("WGS.ID", "A", "B", module.names))
+rownames(emmax.pheno) <- emmax.pheno$WGS.ID
+emmax.pheno <- emmax.pheno[tfam$WGS.ID,]
+
+# Create EMMAX format file
+# 1. Patient Family ID (same as patient ID since unrelated)
+# 2. Patient ID
+# 3. Phenotype
+wgs.id <- as.character(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno %>%
+  dplyr::select(c("A", "B", module.names))
+for (pheno in colnames(emmax.pheno)) {
+  write.table(
+    cbind(wgs.id, wgs.id, emmax.pheno[,pheno]),
+    file=paste0("clean_data/4_stratification/emmax_phenotypes/", pheno, "_Case.pheno"),
+    quote=F, sep="\t", row.names=F, col.names=F
+  )
+}
+```
+
+I edit the covariate file to include only Sex as a covariate
+
+```{r}
+covar.file <- read.table("raw_data/Rosmap_All_MAF05_TRANSPOSED_EMMAX_Covariates_Case_Control.covar")
+covar.file <- covar.file %>% dplyr::select(V1, V2, V3, V5)
+write.table(
+  covar.file, "clean_data/4_stratification/emmax_phenotypes/Rosmap_Covars.covar", 
+  quote=F, sep="\t", row.names=F, col.names=F
+)
+```
+
+Generate EMMAX Files for Hierarchical Genetic Analysis
+------------------------------------------------------
+
+I will be running four analyses using EMMAX:
+1. Case-Control Association
+2. Subtype Association
+3. Module Association
+4. Submodule Association
+5. CERAD/BRAAK/CogDX Association
+
+Subtype and submodule annotation files were generated in the previous section. In this section, I will generate module eigengenes and case-control files for EMMAX. Since the point is to demonstrate the usefulness of subtyping, I am restricting the case-control analysis to only those patients that have transcriptomic data available as well.
+
+```{r}
+# Generate eigengenes for modules
+modules <- read.delim("raw_data/Modules_March2018.txt", stringsAsFactors=F)
+modules <- split(
+  modules %>% 
+    dplyr::filter(brainRegion=="DLPFC") %>%
+    dplyr::select(Gene=GeneID, Module=Module), 
+  modules$Module[modules$brainRegion=="DLPFC"]
+)
+
+module.eigens <- lapply(modules, function(x) {
+  gene.exp = cleaned[,intersect(colnames(cleaned), x$Gene)]
+  gene.exp.p = prcomp(gene.exp)
+  return(gene.exp.p$x[,"PC1"])
+})
+names(module.eigens) <- names(modules)
+module.eigens <- do.call(cbind, module.eigens)
+
+# Generate case-control variable
+# AD = 1, Control = 0
+diagnosis <- as.numeric(factor(as.character(cleaned[rownames(module.eigens),"Diagnosis"]), levels=c("CONTROL", "AD"))) - 1
+module.eigens <- cbind(module.eigens, diagnosis)
+colnames(module.eigens)[ncol(module.eigens)] <- "Diagnosis"
+
+# Generate case-MCI-control variable
+# AD = 2, MCI = 1, Control = 0
+diagnosis <- as.numeric(factor(as.character(cleaned[rownames(module.eigens),"Tissue.Diagnosis"]), levels=c("CONTROL", "OTHER", "AD"))) - 1
+module.eigens <- cbind(module.eigens, diagnosis)
+colnames(module.eigens)[ncol(module.eigens)] <- "Diagnosis_MCI"
+
+# Generate CERAD/BRAAK/CogDX scores
+syn.cov <- read.csv("raw_data/Synapse_Rosmap_Clinical_Data.csv", header=T)
+syn.cov <- syn.cov %>% dplyr::select(projid, braaksc, ceradsc, cogdx)
+
+# Add patients as a column
+module.eigens <- cbind(rownames(module.eigens), as.data.frame(module.eigens))
+colnames(module.eigens)[1] <- "Patient"
+module.eigens$Patient <- as.character(module.eigens$Patient)
+
+# Load mapping from RNA Seq IDs to WGS IDs
+rosmap.ids <- read.csv("raw_data/ROSMAP_IDkey.csv", stringsAsFactors=F)
+
+# Load EMMAX .tfam file and order data by expected patients
+tfam <- read.table("raw_data/Rosmap_allSNPjointMAF05_Clean__TRANSPOSED_EMMAX.tfam")
+colnames(tfam) <- c("Family", "WGS.ID", "X1", "X2", "X3", "X4")
+
+# Add rnaseq_ids to synapse covar and merge into other phenotypes
+syn.cov <- merge(rosmap.ids, syn.cov, by="projid", all.x=T) %>%
+  dplyr::select(Patient=rnaseq_id, braaksc, ceradsc, cogdx) %>%
+  dplyr::filter(Patient != "") %>%
+  unique()
+rownames(syn.cov) <- syn.cov$Patient
+module.eigens$Braak.Score <- syn.cov[module.eigens$Patient,"braaksc"]
+module.eigens$CERAD.Score <- syn.cov[module.eigens$Patient,"ceradsc"]
+module.eigens$Cog.Diagnosis <- syn.cov[module.eigens$Patient,"cogdx"]
+
+# Merge data into subtype map by RNA Seq IDs
+emmax.pheno <- merge(module.eigens, rosmap.ids, by.x="Patient", by.y="rnaseq_id") %>% 
+  dplyr::select(Patient, WGS.ID=wgs_id, colnames(module.eigens)) %>% 
+  dplyr::filter(Patient %in% module.eigens$Patient) %>%
+  unique
+
+# Remove any patients without WGS ID's (were not sequenced)
+mask <- emmax.pheno$WGS.ID != ""& !is.na(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno[mask,]
+
+# Align to TFAM file
+emmax.pheno <- merge(tfam, emmax.pheno, by.x="WGS.ID", by.y="WGS.ID", all.x=T) %>%
+  dplyr::select(c("WGS.ID", colnames(module.eigens)))
+rownames(emmax.pheno) <- emmax.pheno$WGS.ID
+emmax.pheno <- emmax.pheno[tfam$WGS.ID,]
+
+# Create EMMAX format file
+# 1. Patient Family ID (same as patient ID since unrelated)
+# 2. Patient ID
+# 3. Phenotype
+wgs.id <- as.character(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno %>%
+  dplyr::select(colnames(module.eigens)[-1])
+for (pheno in colnames(emmax.pheno)) {
+  write.table(
+    cbind(wgs.id, wgs.id, emmax.pheno[,pheno]),
+    file=paste0("clean_data/4_stratification/emmax_phenotypes/", pheno, ".pheno"),
+    quote=F, sep="\t", row.names=F, col.names=F
+  )
+}
+```
+

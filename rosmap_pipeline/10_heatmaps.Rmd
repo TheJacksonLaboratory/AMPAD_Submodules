@@ -1,0 +1,243 @@
+---
+title: "Module/Submodule Heatmaps"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(viridis)
+library(ggdendro)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+source("../utils/heatmap_plots.R")
+```
+
+```{r load_data}
+# Load module information by Ben
+modules <- read.table("raw_data/Modules_March2018.txt", sep="\t", header=T)
+modules <- split(modules, modules$Module)
+module.names <- unique(modules$Module)
+
+# Load submodules from iterativeWGCNA
+submodules.rosmap <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_sig_genes.RDS")
+submodules.mayo <- readRDS("../mayo_pipeline/clean_data/3_iterative_WGCNA_cleaning/mayo_submodule_sig_genes.RDS")
+submodules.mssm <- readRDS("../mssm_pipeline/clean_data/3_iterative_WGCNA_cleaning/mssm_submodule_sig_genes.RDS")
+submodules <- rbind(submodules.rosmap, submodules.mayo, submodules.mssm)
+submodules <- split(submodules, submodules$Submodule)
+submodule.names <- unlist(readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_labels.RDS"))
+
+# Load Ben's consensus clusters
+consensus <- read.csv("../raw_data/Modules_Consensus_Clusters.csv", stringsAsFactors=F)
+```
+
+Module Heatmap
+--------------
+
+I use the Jaccard distance metric to demonstrate overlap between gene lists for each module. 
+
+```{r}
+# Define Jaccard distance
+jaccard <- function(x, y) { return(length(intersect(x, y)) / length(union(x, y))) }
+
+# Calculate Jaccard distance of modules
+jaccard.mtx <- matrix(nrow=length(modules), ncol=length(modules), 0)
+for (i in 1:nrow(jaccard.mtx)) {
+  for (j in 1:nrow(jaccard.mtx)) {
+    jaccard.mtx[i,j] <- jaccard(modules[[i]]$GeneID, modules[[j]]$GeneID)
+  }
+}
+rownames(jaccard.mtx) <- names(modules)
+colnames(jaccard.mtx) <- names(modules)
+
+# Order Jaccard matrix by Ben's consensus clusters
+jaccard.mtx <- jaccard.mtx[consensus$Module, consensus$Module]
+annots <- consensus[1]
+rownames(annots) <- consensus$Module
+colnames(annots) <- c("Consensus Cluster")
+
+# Define colors for annotations
+annot_cols <- list(
+  `Consensus Cluster`=brewer.pal(length(unique(consensus$Consensus.Cluster)), "Dark2")
+)
+names(annot_cols$`Consensus Cluster`) <- sort(unique(consensus$Consensus.Cluster))
+
+# Plot as PNG and SVG
+svg("results/10_heatmaps/module.heatmap.svg", width=1000, height=1000)
+pheatmap(
+  jaccard.mtx, border_color=NA, breaks=seq(0, 1, length.out=101), color=viridis(101),
+  cluster_rows=F, cluster_cols=F, annotation_col=annots, annotation_colors=annot_cols,
+  legend=F, annotation_legend=F
+)
+dev.off()
+
+png("results/10_heatmaps/module.heatmap.png", width=10.25, height=10, res=600, units="in")
+pheatmap(
+  jaccard.mtx, border_color=NA, breaks=seq(0, 1, length.out=101), color=viridis(101),
+  cluster_rows=F, cluster_cols=F, annotation_col=annots, annotation_colors=annot_cols,
+  legend=F, annotation_legend=F
+)
+dev.off()
+```
+
+Submodule Heatmap
+-----------------
+
+I use the Jaccard distance metric to demonstrate overlap between gene lists for each submodule. 
+
+```{r}
+# Calculate Jaccard distance between submodules
+jaccard.mtx <- matrix(nrow=length(submodules), ncol=length(submodules), 0)
+for (i in 1:nrow(jaccard.mtx)) {
+  for (j in 1:nrow(jaccard.mtx)) {
+    jaccard.mtx[i,j] <- jaccard(submodules[[i]]$Gene, submodules[[j]]$Gene)
+  }
+}
+rownames(jaccard.mtx) <- names(submodules)
+colnames(jaccard.mtx) <- names(submodules)
+
+# Cluster submodules and use a relatively high cutoff to generate 
+# functional consensus clusters visible on heatmap
+h <- hclust(as.dist(1-jaccard.mtx), method="average")
+ggdendrogram(h) +
+  geom_hline(yintercept=0.96, color="firebrick1", lty=2)
+cons.clusts <- cutree(h, h=0.96)
+sub.consensus <- data.frame(
+  Functional.Consensus.Cluster=cons.clusts[h$order],
+  Submodule=names(cons.clusts[h$order]),
+  stringsAsFactors=F
+)
+sub.consensus$Module <- sapply(strsplit(sub.consensus$Submodule, "_"), function(x) x[1])
+
+# Add consensus clusters from Ben
+rownames(consensus) <- consensus$Module
+sub.consensus$Consensus.Cluster <- consensus[sub.consensus$Module,"Consensus.Cluster"]
+
+# Map consensus clusters by order of occurrence and use letters
+map <- 1:length(unique(sub.consensus$Functional.Consensus.Cluster))
+names(map) <- unique(sub.consensus$Functional.Consensus.Cluster)
+sub.consensus$Functional.Consensus.Cluster = LETTERS[map[as.character(sub.consensus$Functional.Consensus.Cluster)]]
+
+# Order Jaccard matrix by order determined by hclust
+jaccard.mtx <- jaccard.mtx[sub.consensus$Submodule, sub.consensus$Submodule]
+annots <- sub.consensus[,c(1,4,3)]
+rownames(annots) <- sub.consensus$Submodule
+colnames(annots) <- c("Functional Consensus Cluster", "Consensus Cluster", "Module")
+
+# Define colors for annotations
+annot_cols <- list(
+  Module=colorRampPalette(brewer.pal(9, "YlGnBu"))(nrow(consensus)),
+  `Consensus Cluster`=brewer.pal(length(unique(consensus$Consensus.Cluster)), "Dark2"),
+  `Functional Consensus Cluster`=colorRampPalette(brewer.pal(9, "Oranges"))(length(unique(sub.consensus$Functional.Consensus.Cluster)))
+)
+names(annot_cols$Module) <- sort(consensus$Module)
+names(annot_cols$`Consensus Cluster`) <- sort(unique(consensus$Consensus.Cluster))
+names(annot_cols$`Functional Consensus Cluster`) <- sort(unique(sub.consensus$Functional.Consensus.Cluster))
+
+# Plot as PNG and SVG
+svg("results/10_heatmaps/submodule.heatmap.svg", width=1000, height=1000)
+pheatmap(
+  jaccard.mtx, border_color=NA, breaks=seq(0, 1, length.out=101), color=viridis(101),
+  treeheight_row=0, treeheight_col=0, annotation_col=annots, annotation_colors=annot_cols,
+  cluster_rows=F, cluster_cols=F, legend=F, annotation_legend=F
+)
+dev.off()
+
+png("results/10_heatmaps/submodule.heatmap.png", width=10.25, height=10, res=600, units="in")
+pheatmap(
+  jaccard.mtx, border_color=NA, breaks=seq(0, 1, length.out=101), color=viridis(101),
+  treeheight_row=0, treeheight_col=0, annotation_col=annots, annotation_colors=annot_cols,
+  cluster_rows=F, cluster_cols=F, legend=F, annotation_legend=F
+)
+dev.off()
+
+# Write functional consensus to file for later use
+sub.consensus <- sub.consensus %>%
+  dplyr::select(Module, Consensus.Cluster, Submodule, Functional.Consensus.Cluster) %>%
+  dplyr::arrange(Consensus.Cluster)
+write.csv(sub.consensus, "results/10_heatmaps/submodule.consensus.csv", row.names=F)
+```
+
+Export gene lists for analysis in Enrichr.
+
+```{r include=FALSE}
+lapply(1:length(unique(sub.consensus$Functional.Consensus.Cluster)), function(i, sub.list, n) {
+  subs <- sub.list[[i]]$Submodule
+  genes <- Reduce(union, lapply(submodules[subs], function(x) as.character(x$Gene)))
+  genes <- bitr(genes, fromType="ENSEMBL", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL
+  write.table(genes, file=paste0("clean_data/10_heatmaps/", n[i], ".txt"), row.names=F, col.names=F, quote=F)
+  
+  genes <- lapply(submodules[subs], function(x) bitr(as.character(x$Gene), fromType="ENSEMBL", toType="SYMBOL", OrgDb=org.Hs.eg.db)$SYMBOL)
+  genes <- reshape2::melt(table(Reduce(c, genes)))
+  genes[,2] <- genes[,2] / max(genes[,2])
+  write.table(genes, file=paste0("clean_data/10_heatmaps/", n[i], "_weighted.txt"), row.names=F, col.names=F, quote=F, sep=",")
+}, sub.list=split(sub.consensus, sub.consensus$Functional.Consensus.Cluster), n=LETTERS[1:length(unique(sub.consensus$Functional.Consensus.Cluster))])
+```
+
+Cell Type Enrichment in Functional Consensus Clusters
+-----------------------------------------------------
+
+```{r}
+NUM.MARKERS <- 100
+
+hum.specific <- read.csv("raw_data/McKenzie_2017_Brain_Cell_Specific_Markers_Human_Specificity.csv", header=T, stringsAsFactors=F)
+
+cell.types <- unique(hum.specific$Celltype)
+
+hum.specific <- lapply(cell.types, function(x) {
+  symbols <- (subset(hum.specific, Celltype == x) %>% dplyr::select(HGNC=gene, Grand.Mean=grand_mean))[1:NUM.MARKERS,"HGNC"]
+  return(bitr(symbols, fromType="SYMBOL", toType="ENSEMBL", OrgDb=org.Hs.eg.db)$ENSEMBL)
+})
+
+cell.types <- c("Astroctyes", "Endothelial Cells", "Microglia", "Neurons", "Oligodendrocytes")
+
+names(hum.specific) <- cell.types
+```
+
+```{r}
+jaccard.mtx <- matrix(nrow=length(modules), ncol=length(cell.types), 0)
+for (i in 1:length(modules)) {
+  for (j in 1:length(cell.types)) {
+    jaccard.mtx[i,j] <- jaccard(as.character(modules[[i]]$GeneID), hum.specific[[j]])
+  }
+}
+rownames(jaccard.mtx) <- names(modules)
+colnames(jaccard.mtx) <- cell.types
+jaccard.mtx <- t(jaccard.mtx)
+
+annots <- consensus[1]
+rownames(annots) <- consensus$Module
+colnames(annots) <- c("Consensus Cluster")
+
+heatmap(jaccard.mtx, col.annots=annots, value.name="Jaccard")
+ggsave("results/10_heatmaps/module.cell.types.png", width=18, height=4)
+ggsave("results/10_heatmaps/module.cell.types.svg", width=18, height=4)
+```
+
+```{r}
+jaccard.mtx <- matrix(nrow=length(submodules), ncol=length(cell.types), 0)
+for (i in 1:length(submodules)) {
+  for (j in 1:length(cell.types)) {
+    jaccard.mtx[i,j] <- jaccard(as.character(submodules[[i]]$Gene), hum.specific[[j]])
+  }
+}
+rownames(jaccard.mtx) <- names(submodules)
+colnames(jaccard.mtx) <- cell.types
+jaccard.mtx <- t(jaccard.mtx)
+
+annots <- sub.consensus[4]
+rownames(annots) <- sub.consensus$Submodule
+
+heatmap(jaccard.mtx, col.annots=annots, value.name="Jaccard")
+ggsave("results/10_heatmaps/submodule.cell.types.png", width=36, height=4)
+ggsave("results/10_heatmaps/submodule.cell.types.svg", width=36, height=4)
+```
+
+

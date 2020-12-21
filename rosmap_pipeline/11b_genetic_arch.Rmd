@@ -1,0 +1,295 @@
+---
+title: "Genetic Architecture"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(data.table)
+library(RColorBrewer)
+library(pheatmap)
+library(gridExtra)
+
+source("../utils/plot_theme.R")
+```
+
+```{r load_data}
+assoc.mtx <- fread("clean_data/11_genetic_arch/assoc_mtx.csv", sep=",", header=T)
+rownames(assoc.mtx) <- assoc.mtx$SNP
+setkey(assoc.mtx, SNP)
+
+assoc.mtx[["CHR"]] <- as.numeric(sapply(strsplit(assoc.mtx[["SNP"]], ":"), function(x) x[1]))
+assoc.mtx[["BP"]] <- as.numeric(sapply(strsplit(assoc.mtx[["SNP"]], ":"), function(x) x[2]))
+```
+
+Number of SNPs from Each Analysis
+---------------------------------
+
+For each analysis, I check how many SNPs were genome-wide suggestive. I use this to determine p-values of SNPs in the case-control study, module mapping study, and the submodule mapping study.
+
+```{r}
+# Define some globals
+case <- colnames(assoc.mtx)[2]
+subtypes <- colnames(assoc.mtx)[4:5]
+modules <- colnames(assoc.mtx)[6:9]
+submodules <- colnames(assoc.mtx)[10:20]
+```
+
+
+```{r}
+for (module in modules) {
+  
+  tops <- c("Diagnosis", subtypes, module, submodules[grep(module, submodules)])
+  for (s in tops) {
+  
+    test <- assoc.mtx[which(assoc.mtx[[s]] < 1e-05)]
+    test <- as.data.frame(test)
+    rownames(test) <- test$SNP
+    
+    plot.data <- reshape2::melt(test, id="SNP")
+    plot.data$Group = character(nrow(plot.data))
+    plot.data$Group[plot.data$variable %in% case] = "Diagnosis"
+    plot.data$Group[plot.data$variable %in% subtypes] = "Subtypes"
+    plot.data$Group[plot.data$variable %in% modules] = "Module"
+    plot.data$Group[plot.data$variable %in% submodules] = "Submodules"
+    plot.data$Group = factor(plot.data$Group, levels=c("Diagnosis", "Subtypes", "Module", "Submodules"))
+    
+    cols <- brewer.pal(8, "Dark2")
+    count <- 1
+    p <- ggplot()
+    
+    subs <- submodules[grep(module, submodules)]
+    for (subtype in subtypes) {
+      for (submodule in subs) {
+        plot.data.s <- plot.data %>% dplyr::filter(variable %in% c("Diagnosis", subtype, module, submodule))
+        p <- p + 
+          geom_jitter(data=plot.data.s, aes(x=Group, y=-log10(value), group=SNP), size=2, alpha=0.5, width=0.1, color=cols[count]) + 
+          geom_line(
+            data=plot.data.s %>% dplyr::group_by(Group) %>% dplyr::summarise(Mean=mean(value)), 
+            aes(x=Group, y=-log10(Mean), group=1), alpha=0.75, color=cols[count], size=1
+          )
+        count <- count + 1
+      }
+    }
+    
+    p <- p + 
+      geom_vline(xintercept=2:nrow(test)-0.5, alpha=0.2) +
+      geom_hline(yintercept=5, lty=2, color="firebrick1") +
+      labs(x="Analysis", y="-log10(P)", title=module, subtitle=paste0("Top SNPs from ", s)) +
+      guides(color=guide_legend(title="Submodule")) +
+      basic_theme + 
+      theme(axis.text.x=element_text(angle=90, hjust=1))
+    print(p)
+  }
+}
+```
+
+Some observations:
+
+1. SNPs that are highly associated with LOAD in case-control association are not highly associated on the module or submodule level
+2. SNPs that are highly associated with LOAD modules tend to be grouped into one of the submodules
+3. Top SNPs from submodules are generally not found to be highly associated in module analyses or case-control analyses
+
+Visualization Tests
+-------------------
+
+```{r}
+# Chromosome lengths by GRCH37.p13
+chrs <- data.frame(
+  CHR=factor(1:22, levels=1:22),
+  Length=c(
+    249250621, 243199373, 198022430, 191154276, 180915260, 171115067, 159138663, 146364022, 141213431, 135534747, 135006516,
+    133851895, 115169878, 107349540, 102531392, 90354753, 81195210, 78077248, 59128983, 63025520, 48129895, 51304566
+  )
+)
+```
+
+
+```{r}
+tops <- c("Diagnosis", "DLPFCyellow", "DLPFCyellow_1")
+snps <- data.frame() 
+
+for (s in tops) {
+  snps.d <- assoc.mtx[which(assoc.mtx[[s]] < 1e-05)] %>% as.data.frame()
+  snps.d <- snps.d %>% 
+    dplyr::select(SNP, CHR, BP, P=s) %>%
+    dplyr::mutate(CHR.Length = chrs[CHR,"Length"]) %>%
+    dplyr::mutate(Analysis=s)
+  snps <- rbind(snps, snps.d)
+}
+snps$Analysis <- factor(snps$Analysis, levels=tops)
+snps <- snps %>% dplyr::mutate(Start=as.numeric(Analysis) - 0.5, End=as.numeric(Analysis) + 0.5) 
+
+ggplot() +
+  geom_bar(data=chrs, aes(x=CHR, y=Length), stat="identity", color="#999999", fill="#CCCCCC", width=0.75) +
+  geom_segment(data=snps, aes(x=CHR-0.5, xend=CHR+0.5, y=BP, yend=BP, color=Analysis), alpha=0.3) +
+  labs(x="Chromosome", y="Base Pairs", color="Analysis") +
+  scale_color_brewer(palette="Dark2") +
+  coord_flip() +
+  basic_theme_big
+
+chr <- 1
+plot.chrs <- chrs[rep(chr, length(tops)),]
+plot.chrs$Analysis <- factor(tops, levels=tops)
+
+plot.snps <- snps %>% dplyr::filter(CHR == chr)
+
+p <- ggplot() +
+  geom_bar(data=plot.chrs, aes(x=Analysis, y=Length), stat="identity", color="#999999", fill="#CCCCCC", width=0.75, position=position_dodge(0.9)) +
+  geom_segment(data=plot.snps, aes(x=Start, xend=End, y=BP, yend=BP, color=Analysis), alpha=0.3) +
+  labs(title=paste0("Chromosome ", chr), x="Analysis", y="Base Pairs", color="Analysis") +
+  scale_color_brewer(palette="Dark2") +
+  coord_flip() +
+  basic_theme_big
+```
+
+Basic Plots
+-----------
+
+I am asking how many SNPs were suggestively detected in Case-Control, Subtypes, Modules, and Submodules?
+
+```{r}
+case.snps <- assoc.mtx[["SNP"]][which(Reduce(function(x, y) x | y, lapply(case, function(x) assoc.mtx[[x]] < 1e-05)))]
+subtypes.snps <- assoc.mtx[["SNP"]][which(Reduce(function(x, y) x | y, lapply(subtypes, function(x) assoc.mtx[[x]] < 1e-05)))]
+modules.snps <- assoc.mtx[["SNP"]][which(Reduce(function(x, y) x | y, lapply(modules, function(x) assoc.mtx[[x]] < 1e-05)))]
+submodules.snps <- assoc.mtx[["SNP"]][which(Reduce(function(x, y) x | y, lapply(submodules, function(x) assoc.mtx[[x]] < 1e-05)))]
+
+plot.data <- data.frame(
+  Analysis=c("Case-Control", "Subtypes", "Modules", "Submodules"),
+  Num.SNPs=c(length(case.snps), length(subtypes.snps), length(modules.snps), length(submodules.snps))
+)
+plot.data$Analysis <- factor(plot.data$Analysis, levels=plot.data$Analysis)
+
+p <- ggplot(plot.data) + 
+  geom_bar(aes(x=Analysis, y=Num.SNPs, fill=Analysis), stat="identity") +
+  geom_text(aes(x=Analysis, y=Num.SNPs, label=Num.SNPs), vjust=-0.5) +
+  labs(x="Analysis Type", y="Number of Suggestive SNPs", title="Suggestive SNPs") +
+  guides(fill=F) + scale_fill_brewer(palette="Accent") +
+  basic_theme_big
+
+plot.data <- data.frame(
+  Analysis=c("Case-Control", "Subtypes", "Modules", "Submodules"),
+  Num.SNPs=c(
+    length(Reduce(setdiff, list(case.snps, subtypes.snps, modules.snps, submodules.snps))),
+    length(Reduce(setdiff, list(subtypes.snps, case.snps, modules.snps, submodules.snps))),
+    length(Reduce(setdiff, list(modules.snps, case.snps, subtypes.snps, submodules.snps))),
+    length(Reduce(setdiff, list(submodules.snps, case.snps, subtypes.snps, modules.snps)))
+  )
+)
+plot.data$Analysis <- factor(plot.data$Analysis, levels=plot.data$Analysis)
+
+q <- ggplot(plot.data) + 
+  geom_bar(aes(x=Analysis, y=Num.SNPs, fill=Analysis), stat="identity") +
+  geom_text(aes(x=Analysis, y=Num.SNPs, label=Num.SNPs), vjust=-0.5) +
+  labs(x="Analysis Type", y="Number of Suggestive SNPs", title="Unique Suggestive SNPs") +
+  guides(fill=F) + scale_fill_brewer(palette="Accent") +
+  basic_theme_big
+
+grid.arrange(p, q, nrow=1)
+```
+
+What is the overlap of SNPs across these analyses?
+
+```{r}
+p <- plotVenn(
+  list(`Case-Control`=case.snps, Subtypes=subtypes.snps, Modules=modules.snps, Submodules=submodules.snps), 
+  setColors=brewer.pal(4, "Accent"), nCycles=10000
+)
+showSVG(nVennObj=p, systemShow=T)
+```
+
+Observations
+1. No suggestive SNPs from the case-control analysis are replicated in any of the other analyses
+2. Submodules have the most number of unique suggestive SNPs (740)
+3. Modules and submodules share a large number of SNPs (390)
+
+How do p-values change between analyses for SNPs detected in common amongst subtypes, modules, and submodules? 
+
+Only 2 loci are shared between subtypes, modules, and submodules. 
+
+Instead, I look at SNPs that are found only when mapping submodules.
+
+```{r}
+common.snps <- Reduce(setdiff, list(submodules.snps, case.snps, subtypes.snps, modules.snps))
+
+snps <- as.data.frame(assoc.mtx[common.snps,]) %>%
+  dplyr::select(-Diagnosis_MCI, -CHR, -BP)
+snps <- reshape2::melt(snps) %>%
+  dplyr::select(SNP, Analysis=variable, P=value)
+snps$Analysis <- factor(snps$Analysis, levels=c(case, subtypes, modules, submodules))
+
+ggplot(snps, aes(group=SNP)) +
+  geom_jitter(aes(x=Analysis, y=-log10(P)), alpha=0.2, height=0) +
+  geom_hline(yintercept=5, color="firebrick1", lty=2) +
+  geom_hline(yintercept=2, color="yellow", lty=2) +
+  basic_theme_big +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1))
+```
+
+Observations
+
+1. There is some increasing power of observation using submodules. Most of the associations suggestive only in submodules are associated in modules and subtypes as well, but not at a genome-wide suggestive level. However, they are stricly not associated in the case-control diagnosis analysis. 
+
+Locus Overlap Analysis
+----------------------
+
+I export the loci detected in ROSMAP for further analysis in Cytoscape. 
+
+```{r}
+loci <- read.csv("clean_data/11_genetic_arch/loci.csv", header=T, stringsAsFactors=F)
+
+# How many loci from case-control are present in other analyses?
+diagnosis <- dplyr::filter(loci, Analysis=="Diagnosis")$Locus
+dplyr::filter(loci, Locus %in% diagnosis)
+
+# How many loci from DLPFCblue are present in submodules?
+blue <- dplyr::filter(loci, Analysis=="DLPFCblue")$Locus
+dplyr::filter(loci, Locus %in% blue)
+
+# Are all DLPFCblue associations represented in submodules?
+blue[which(!(blue %in% dplyr::filter(loci, Locus %in% blue, Type=="Submodules")$Locus))]
+
+# How many loci from DLPFCbrown are present in submodules?
+brown <- dplyr::filter(loci, Analysis=="DLPFCbrown")$Locus
+dplyr::filter(loci, Locus %in% brown)
+
+# Are all DLPFCbrown associations represented in submodules?
+brown[which(!(brown %in% dplyr::filter(loci, Locus %in% brown, Type=="Submodules")$Locus))]
+
+# How many loci from DLPFCturquoise are present in submodules?
+turquoise <- dplyr::filter(loci, Analysis=="DLPFCturquoise")$Locus
+dplyr::filter(loci, Locus %in% turquoise)
+
+# Are all DLPFCturquoise associations represented in submodules?
+turquoise[which(!(turquoise %in% dplyr::filter(loci, Locus %in% turquoise, Type=="Submodules")$Locus))]
+
+# How many loci from DLPFCyellow are present in submodules?
+yellow <- dplyr::filter(loci, Analysis=="DLPFCyellow")$Locus
+dplyr::filter(loci, Locus %in% yellow)
+
+# Are all DLPFCyellow associations represented in submodules?
+yellow[which(!(yellow %in% dplyr::filter(loci, Locus %in% yellow, Type=="Submodules")$Locus))]
+
+# Export for Cytoscape - node table
+node.table <- data.frame(
+  Node=c(unique(loci$Locus), unique(loci$Analysis)),
+  Node.Type=c(rep("Locus", length(unique(loci$Locus))), rep("Analysis", length(unique(loci$Analysis))))
+)
+write.csv(node.table, "results/11_genetic_arch/node.table.csv", row.names=F)
+
+# Export for Cytoscape - edge table
+edge.table <- as.data.frame(table(loci))
+edge.table <- edge.table %>% 
+  dplyr::filter(Freq != 0) %>%
+  dplyr::select(Source=Analysis, Destination=Locus, Type)
+write.csv(edge.table, "results/11_genetic_arch/edge.table.csv", row.names=T, quote=F)
+```
+
+Observations
+
+1. All associations from DLPFCblue and DLPFCyellow were represented in submodule associations. There were some genes in DLPFCbrown and DLPFCturquoise that were not found in submodule annotations.

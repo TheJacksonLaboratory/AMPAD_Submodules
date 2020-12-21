@@ -1,0 +1,163 @@
+---
+title: "GWAS Analysis Setup"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(qqman)
+library(Homo.sapiens)
+library(clusterProfiler)
+library(rtracklayer)
+library(SNPlocs.Hsapiens.dbSNP144.GRCh37)
+library(httr)
+library(jsonlite)
+library(xml2)
+
+source("../utils/manhattan_plots.R")
+```
+
+```{r load_data}
+# Retrieve all files for cohort
+files <- list.files(path="clean_data/5_gwas/5a_cleaning/", pattern="\\.ps.sig$")
+```
+
+GWAS Analysis and Setup
+-----------------------
+
+I am generating Manhattan plots for significant SNPs and writing out suggestive SNP information. 
+
+```{r}
+# Produce results for each cohort
+for (file.index in 1:length(files)) {
+
+  cat(paste("Analyzing file", files[file.index], "\n"))
+  
+  #------------------------------------------------
+  # Load Data
+  #------------------------------------------------
+  
+  cat(paste("\tLoading file", files[file.index], "\n"))
+  
+  # Load GWAS results and set column names
+  gwas.results <- read.table(paste0("clean_data/5_gwas/5a_cleaning/", files[file.index]), sep="\t", header=F)
+  colnames(gwas.results) <- c("SNP.ID", "Beta", "Beta.SE", "P.Value")
+  
+  # Store sample name for naming files in results
+  sample.name <- strsplit(files[file.index], "\\.")[[1]][1]
+  
+  #------------------------------------------------
+  # Data Preparation
+  #------------------------------------------------
+  
+  cat("\tPreparing Data\n")
+  
+  # Convert SNP IDs to character
+  gwas.results$SNP.ID <- gwas.results$SNP.ID %>% as.character()
+  
+  # Add CHR, BP, and z-score columns
+  chr.bp.split <- strsplit(gwas.results$SNP.ID, ":") %>% unlist()
+  gwas.results$CHR <- chr.bp.split[seq(1, length(chr.bp.split), 2)] %>% as.numeric()
+  gwas.results$BP <- chr.bp.split[seq(2, length(chr.bp.split), 2)] %>% as.numeric()
+  gwas.results$Z.Score <- gwas.results$Beta / gwas.results$Beta.SE
+  rm(chr.bp.split)
+  
+  # Mutate file to match qqman requirements
+  gwas.results <- gwas.results[,c("SNP.ID", "CHR", "BP", "P.Value", "Z.Score")]
+  colnames(gwas.results) <- c("SNP", "CHR", "BP", "P", "zscore")
+  
+  #------------------------------------------------
+  # Suggestive Data Analysis
+  #------------------------------------------------
+  
+  cat("\tDetermining Easily Accessible Suggestive Genes in 200kb Region\n")
+  
+  # Extract genes that are suggestive
+  # Check in a 100kb region
+  suggestive <- dplyr::filter(gwas.results, P<0.00001)
+  suggestive$BP.Start <- suggestive$BP - 100000
+  suggestive$BP.End <- suggestive$BP + 100000
+  
+  # Create GRanges Object
+  suggestive.coords <- suggestive %>% 
+    dplyr::select(chrom=CHR, start=BP.Start, end=BP.End) %>%
+    dplyr::mutate(chrom=paste0("chr", chrom)) %>%
+    makeGRangesFromDataFrame()
+  
+  # Find genes that overlap with SNPs
+  gene.overlap <- subsetByOverlaps(genes(TxDb.Hsapiens.UCSC.hg19.knownGene), suggestive.coords)
+  gene.overlap <- as.data.frame(gene.overlap)
+  
+  # Retrieve genes from Entrez ID
+  genes <- bitr(gene.overlap$gene_id, fromType="ENTREZID", toType="SYMBOL", OrgDb="org.Hs.eg.db")
+  genes <- merge(genes, gene.overlap, by.x="ENTREZID", by.y="gene_id")
+  genes
+  
+  # Write genes to results
+  write.csv(genes, file=paste0("clean_data/5_gwas/5b_gwas_setup/", sample.name, "_genes.csv"), row.names=F, quote=F)
+    
+  #------------------------------------------------
+  # Manhattan Plot
+  #------------------------------------------------
+  
+  cat("\tPlotting Manhattan Plot for GWAS Results\n")
+  
+  # Manhattan Plot
+  manhattan.plot(gwas.results)
+  ggsave(paste0("results/5_gwas/", sample.name, "_manhattan.png"), width=15, height=6)
+  
+  #------------------------------------------------
+  # Variant Annotation
+  #------------------------------------------------
+  
+  cat("\tAnnotating Variants using dbSNP144 on Build hg19-GRCh37\n")
+  
+  # Load SNPs from dbSNP144
+  snps <- SNPlocs.Hsapiens.dbSNP144.GRCh37
+  snpcount(snps)
+  
+  # Convert suggestive SNPs into GRanges object
+  suggestive$BP.Start <- suggestive$BP 
+  suggestive$BP.End <- suggestive$BP 
+  suggestive.coords <- suggestive %>% 
+    dplyr::select(chrom=CHR, start=BP.Start, end=BP.End) %>%
+    makeGRangesFromDataFrame()
+  
+  # Determine rsIDs for suggestive SNPs
+  query.snps <- snpsByOverlaps(snps, suggestive.coords) %>%
+    as.data.frame()
+  
+  # Merge suggestive SNPs with RefSNP IDs
+  query.snps$SNP <- paste0(query.snps$seqnames, ":", query.snps$pos)
+  query.snps <- query.snps %>% 
+    dplyr::select(SNP=SNP, RefSNP.ID=RefSNP_id, Allele.Ambiguity=alleles_as_ambig)
+  suggestive <- merge(suggestive, query.snps, by="SNP", all.x=T)
+  
+  # Get ancestral and minor allele for each RefSNP ID
+  server <- "http://rest.ensembl.org/variation/human/"
+  suggestive$Allele <- rep("", nrow(suggestive))
+  for (i in 1:nrow(suggestive)) {
+    if (!is.na(suggestive$RefSNP.ID[i])) {
+      response <- GET(paste0(server, suggestive$RefSNP.ID[i], "?"), content_type("application/json"))
+      response <- fromJSON(toJSON(content(response)))
+      if (length(response$mappings) > 0) {
+        suggestive$Allele[i] <- (response$mappings[,"allele_string"] %>% unlist())[1] %>% as.character()
+      }
+    } else {
+      suggestive$Allele[i] <- NA
+    }
+  }
+  suggestive$Allele <- suggestive$Allele %>% 
+    unlist() %>%
+    substring(., 1, 3)
+  
+  # Save suggestive SNP information
+  write.csv(suggestive, file=paste0("clean_data/5_gwas/5b_gwas_setup/", sample.name, "_suggestive_SNPs.csv"), row.names=F, quote=F)
+}
+```
+

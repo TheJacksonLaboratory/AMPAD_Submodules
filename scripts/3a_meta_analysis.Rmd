@@ -1,0 +1,412 @@
+---
+title: "Meta-Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(data.table)
+
+source("../utils/manhattan_plots.R")
+source("../utils/plot_theme.R")
+```
+
+```{r load_data}
+rosmap.submodules <- readRDS("../rosmap_pipeline/clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_sig_genes.RDS")
+rosmap.submodule.names <- readRDS("../rosmap_pipeline/clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_labels.RDS")
+
+rosmap <- readRDS("../rosmap_pipeline/clean_data/1_rosmap_cleaning/rosmap_cleaned.RDS")
+rosmap.genes <- readRDS("../rosmap_pipeline/clean_data/1_rosmap_cleaning/rosmap_gene_key.RDS")
+mayo <- readRDS("../mayo_pipeline/clean_data/1_mayo_cleaning/mayo_cleaned.RDS")
+mayo.genes <- readRDS("../mayo_pipeline/clean_data/1_mayo_cleaning/mayo_gene_key.RDS")
+mssm <- readRDS("../mssm_pipeline/clean_data/1_mssm_cleaning/mssm_cleaned.RDS")
+mssm.genes <- readRDS("../mssm_pipeline/clean_data/1_mssm_cleaning/mssm_gene_key.RDS")
+
+# Isolate PHG and FP tissue expression
+mssm.phg <- mssm[grepl("PHG", mssm$Tissue.Diagnosis),]
+mssm.fp <- mssm[grepl("FP", mssm$Tissue.Diagnosis),]
+```
+
+Firstly, I generate submodules from the ROSMAP cohort in the other two cohorts by finding the genes that are assayed across all three cohorts by submodule.
+
+I collect these genes in the DLPFC gene expression data and perform PCA on them. I store the rotation matrix, representing a function to generate eigengene phenotype values for the other two cohorts. The rotation matrix is a square matrix.
+
+```{r}
+submodules <- lapply(rosmap.submodule.names, function(x) {
+  
+  # Generate set of common genes
+  genes <- as.character((rosmap.submodules %>% dplyr::filter(Submodule == x))$Gene)
+  common.genes <- Reduce(intersect, list(genes, mayo.genes, mssm.genes))
+  
+  # Perform PCA on DLPFC expression data
+  submodule.exp <- rosmap[,common.genes]
+  pca <- prcomp(submodule.exp, scale.=T)
+  
+  return(list(genes=common.genes, rotation=pca$rotation))
+})
+names(submodules) <- rosmap.submodule.names
+```
+
+Here, I calculate the eigengene values for all three cohorts separately. 
+
+```{r}
+rosmap.eigengenes <- as.data.frame(t(do.call(rbind, lapply(rosmap.submodule.names, function(x) {
+  
+  # Retrieve expression for submodule
+  exp <- rosmap[,submodules[[x]]$genes]
+  # Calculate eigengenes matrix by rotating 
+  eigengenes <- as.matrix(exp) %*% submodules[[x]]$rotation
+  # Return first eigengene
+  return(eigengenes[,1])
+}))))
+colnames(rosmap.eigengenes) <- rosmap.submodule.names
+rosmap.eigengenes <- rosmap.eigengenes %>%
+  dplyr::mutate(Patient=rownames(rosmap.eigengenes)) %>%
+  dplyr::select(Patient, everything())
+
+mayo.eigengenes <- as.data.frame(t(do.call(rbind, lapply(rosmap.submodule.names, function(x) {
+  
+  # Retrieve expression for submodule
+  exp <- mayo[,submodules[[x]]$genes]
+  # Calculate eigengenes matrix by rotating 
+  eigengenes <- as.matrix(exp) %*% submodules[[x]]$rotation
+  # Return first eigengene
+  return(eigengenes[,1])
+}))))
+colnames(mayo.eigengenes) <- rosmap.submodule.names
+mayo.eigengenes <- mayo.eigengenes %>%
+  dplyr::mutate(Patient=rownames(mayo.eigengenes)) %>%
+  dplyr::select(Patient, everything())
+
+mssm.phg.eigengenes <- as.data.frame(t(do.call(rbind, lapply(rosmap.submodule.names, function(x) {
+  
+  # Retrieve expression for submodule
+  exp <- mssm.phg[,submodules[[x]]$genes]
+  # Calculate eigengenes matrix by rotating 
+  eigengenes <- as.matrix(exp) %*% submodules[[x]]$rotation
+  # Return first eigengene
+  return(eigengenes[,1])
+}))))
+colnames(mssm.phg.eigengenes) <- rosmap.submodule.names
+mssm.phg.eigengenes <- mssm.phg.eigengenes %>%
+  dplyr::mutate(Patient=rownames(mssm.phg.eigengenes)) %>%
+  dplyr::select(Patient, everything())
+
+mssm.fp.eigengenes <- as.data.frame(t(do.call(rbind, lapply(rosmap.submodule.names, function(x) {
+  
+  # Retrieve expression for submodule
+  exp <- mssm.fp[,submodules[[x]]$genes]
+  # Calculate eigengenes matrix by rotating 
+  eigengenes <- as.matrix(exp) %*% submodules[[x]]$rotation
+  # Return first eigengene
+  return(eigengenes[,1])
+}))))
+colnames(mssm.fp.eigengenes) <- rosmap.submodule.names
+mssm.fp.eigengenes <- mssm.fp.eigengenes %>%
+  dplyr::mutate(Patient=rownames(mssm.fp.eigengenes)) %>%
+  dplyr::select(Patient, everything())
+```
+
+Mayo EMMAX Phenotypes
+---------------------
+
+Generating EMMAX phenotype tables to run single-variant association. 
+
+```{r}
+# Load mapping from RNA Seq IDs to WGS IDs
+mayo.ids <- read.csv("../mayo_pipeline/raw_data/AMP-AD_Mayo_WGS_covariates.csv", stringsAsFactors=F)
+
+# Load EMMAX .tfam file and order data by expected patients
+tfam <- read.table("../mayo_pipeline/raw_data/Mayo_allSNPjointMAF05_Clean__TRANSPOSED_EMMAX.tfam")
+colnames(tfam) <- c("Family", "WGS.ID", "X1", "X2", "X3", "X4")
+
+# Merge data into subtype map by RNA Seq IDs
+emmax.pheno <- merge(mayo.eigengenes, mayo.ids, by.x="Patient", by.y="RNAseq_TCX_SampleID") %>% 
+  dplyr::select(colnames(mayo.eigengenes), WGS.ID=WGS_Participant_ID) %>% 
+  dplyr::filter(Patient %in% mayo.eigengenes$Patient) %>%
+  unique
+
+# Remove any patients without WGS ID's (were not sequenced)
+mask <- emmax.pheno$WGS.ID != ""& !is.na(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno[mask,]
+
+# Align to TFAM file
+emmax.pheno <- merge(tfam, emmax.pheno, by.x="WGS.ID", by.y="WGS.ID", all.x=T) %>%
+  dplyr::select(WGS.ID, colnames(mayo.eigengenes))
+rownames(emmax.pheno) <- emmax.pheno$WGS.ID
+emmax.pheno <- emmax.pheno[as.character(tfam$WGS.ID),]
+
+# Create EMMAX format file
+# 1. Patient Family ID (same as patient ID since unrelated)
+# 2. Patient ID
+# 3. Phenotype
+wgs.id <- as.character(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno %>%
+  dplyr::select(colnames(mayo.eigengenes)[-1])
+for (pheno in colnames(emmax.pheno)) {
+  write.table(
+    cbind(wgs.id, wgs.id, emmax.pheno[,pheno]),
+    file=paste0("clean_data/3_meta_analysis/mayo_emmax_phenotypes/", pheno, ".pheno"),
+    quote=F, sep="\t", row.names=F, col.names=F
+  )
+}
+```
+
+MSSM PHG EMMAX Phenotypes
+-------------------------
+
+Generating EMMAX phenotype tables to run single-variant association. 
+
+```{r}
+# Load mapping from RNA Seq IDs to WGS IDs
+mssm.ids.1 <- read.csv("../mssm_pipeline/raw_data/AMP-AD_MSBB_WGS__sample_barcode_brainBankID.csv", stringsAsFactors=F)
+mssm.ids.2 <- read.csv("../mssm_pipeline/raw_data/MSSM_RNASeq_covars.csv", stringsAsFactors=F)
+mssm.ids <- merge(mssm.ids.1, mssm.ids.2, by.x="individualIdentifier", by.y="individualIdentifier")
+
+# Load EMMAX .tfam file and order data by expected patients
+tfam <- read.table("../mssm_pipeline/raw_data/MSSB_allSNPjointMAF05__TRANSPOSED_EMMAX.tfam")
+colnames(tfam) <- c("Family", "WGS.ID", "X1", "X2", "X3", "X4")
+
+# Merge data into subtype map by RNA Seq IDs
+emmax.pheno <- merge(mssm.phg.eigengenes, mssm.ids, by.x="Patient", by.y="sampleIdentifier") %>% 
+  dplyr::select(colnames(mssm.phg.eigengenes), WGS.ID=WGS_Barcode) %>% 
+  dplyr::filter(Patient %in% mssm.phg.eigengenes$Patient) %>%
+  unique
+
+tfam$WGS.ID <- as.character(tfam$WGS.ID)
+emmax.pheno$WGS.ID <- as.character(emmax.pheno$WGS.ID)
+
+# Remove any patients without WGS ID's (were not sequenced)
+mask <- emmax.pheno$WGS.ID != ""& !is.na(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno[mask,]
+
+# Align to TFAM file
+emmax.pheno <- merge(tfam, emmax.pheno, by.x="WGS.ID", by.y="WGS.ID", all.x=T) %>%
+  dplyr::select(WGS.ID, colnames(mssm.phg.eigengenes))
+rownames(emmax.pheno) <- emmax.pheno$WGS.ID
+emmax.pheno <- emmax.pheno[as.character(tfam$WGS.ID),]
+
+# Create EMMAX format file
+# 1. Patient Family ID (same as patient ID since unrelated)
+# 2. Patient ID
+# 3. Phenotype
+wgs.id <- as.character(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno %>%
+  dplyr::select(colnames(mssm.phg.eigengenes)[-1])
+for (pheno in colnames(emmax.pheno)) {
+  write.table(
+    cbind(wgs.id, wgs.id, emmax.pheno[,pheno]),
+    file=paste0("clean_data/3_meta_analysis/mssm_emmax_phenotypes/", pheno, ".pheno"),
+    quote=F, sep="\t", row.names=F, col.names=F
+  )
+}
+```
+
+MSSM FP EMMAX Phenotypes
+------------------------
+
+Generating EMMAX phenotype tables to run single-variant association. 
+
+```{r}
+# Load mapping from RNA Seq IDs to WGS IDs
+mssm.ids.1 <- read.csv("../mssm_pipeline/raw_data/AMP-AD_MSBB_WGS__sample_barcode_brainBankID.csv", stringsAsFactors=F)
+mssm.ids.2 <- read.csv("../mssm_pipeline/raw_data/MSSM_RNASeq_covars.csv", stringsAsFactors=F)
+mssm.ids <- merge(mssm.ids.1, mssm.ids.2, by.x="individualIdentifier", by.y="individualIdentifier")
+
+# Load EMMAX .tfam file and order data by expected patients
+tfam <- read.table("../mssm_pipeline/raw_data/MSSB_allSNPjointMAF05__TRANSPOSED_EMMAX.tfam")
+colnames(tfam) <- c("Family", "WGS.ID", "X1", "X2", "X3", "X4")
+
+# Merge data into subtype map by RNA Seq IDs
+emmax.pheno <- merge(mssm.fp.eigengenes, mssm.ids, by.x="Patient", by.y="sampleIdentifier") %>% 
+  dplyr::select(colnames(mssm.fp.eigengenes), WGS.ID=WGS_Barcode) %>% 
+  dplyr::filter(Patient %in% mssm.fp.eigengenes$Patient) %>%
+  unique
+
+tfam$WGS.ID <- as.character(tfam$WGS.ID)
+emmax.pheno$WGS.ID <- as.character(emmax.pheno$WGS.ID)
+
+# Remove any patients without WGS ID's (were not sequenced)
+mask <- emmax.pheno$WGS.ID != ""& !is.na(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno[mask,]
+
+# Align to TFAM file
+emmax.pheno <- merge(tfam, emmax.pheno, by.x="WGS.ID", by.y="WGS.ID", all.x=T) %>%
+  dplyr::select(WGS.ID, colnames(mssm.fp.eigengenes))
+rownames(emmax.pheno) <- emmax.pheno$WGS.ID
+emmax.pheno <- emmax.pheno[as.character(tfam$WGS.ID),]
+
+# Create EMMAX format file
+# 1. Patient Family ID (same as patient ID since unrelated)
+# 2. Patient ID
+# 3. Phenotype
+wgs.id <- as.character(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno %>%
+  dplyr::select(colnames(mssm.fp.eigengenes)[-1])
+for (pheno in colnames(emmax.pheno)) {
+  write.table(
+    cbind(wgs.id, wgs.id, emmax.pheno[,pheno]),
+    file=paste0("clean_data/3_meta_analysis/mssm_fp_emmax_phenotypes/", pheno, ".pheno"),
+    quote=F, sep="\t", row.names=F, col.names=F
+  )
+}
+```
+
+ROSMAP EMMAX Phenotypes
+-----------------------
+
+Generating EMMAX phenotype tables to run single-variant association. 
+
+```{r}
+# Load mapping from RNA Seq IDs to WGS IDs
+rosmap.ids <- read.csv("../rosmap_pipeline/raw_data/ROSMAP_IDkey.csv", stringsAsFactors=F)
+
+# Load EMMAX .tfam file and order data by expected patients
+tfam <- read.table("../rosmap_pipeline/raw_data/Rosmap_allSNPjointMAF05_Clean__TRANSPOSED_EMMAX.tfam")
+colnames(tfam) <- c("Family", "WGS.ID", "X1", "X2", "X3", "X4")
+
+# Merge data into subtype map by RNA Seq IDs
+emmax.pheno <- merge(rosmap.eigengenes, rosmap.ids, by.x="Patient", by.y="rnaseq_id") %>% 
+  dplyr::select(colnames(rosmap.eigengenes), WGS.ID=wgs_id) %>% 
+  dplyr::filter(Patient %in% rosmap.eigengenes$Patient) %>%
+  unique
+
+# Remove any patients without WGS ID's (were not sequenced)
+mask <- emmax.pheno$WGS.ID != ""& !is.na(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno[mask,]
+
+# Align to TFAM file
+emmax.pheno <- merge(tfam, emmax.pheno, by.x="WGS.ID", by.y="WGS.ID", all.x=T) %>%
+  dplyr::select(WGS.ID, colnames(rosmap.eigengenes))
+rownames(emmax.pheno) <- emmax.pheno$WGS.ID
+emmax.pheno <- emmax.pheno[tfam$WGS.ID,]
+
+# Create EMMAX format file
+# 1. Patient Family ID (same as patient ID since unrelated)
+# 2. Patient ID
+# 3. Phenotype
+wgs.id <- as.character(emmax.pheno$WGS.ID)
+emmax.pheno <- emmax.pheno %>%
+  dplyr::select(colnames(rosmap.eigengenes)[-1])
+for (pheno in colnames(emmax.pheno)) {
+  write.table(
+    cbind(wgs.id, wgs.id, emmax.pheno[,pheno]),
+    file=paste0("clean_data/3_meta_analysis/rosmap_emmax_phenotypes/", pheno, ".pheno"),
+    quote=F, sep="\t", row.names=F, col.names=F
+  )
+}
+```
+
+Instructions: Copy the EMMAX phenotype directories onto Helix and run the `run_emmax.sh` script. Make sure to follow instructions inside the `run_emmax.sh` script - a certain directory structure is expected. Store the resulting files in the `results/3_meta_analysis/` directory.
+
+Generate METAL Input Files
+--------------------------
+
+```{r include=FALSE}
+# Generate files for MAYO TCX
+lapply(rosmap.submodule.names, function(x) {
+  
+  cat("Processing files for Submodule", x, "\n")
+  
+  snps <- fread(paste0("results/3_meta_analysis/mayo/", x, ".pheno.output.ps"))
+  colnames(snps) <- c("SNP", "OR", "SE", "P")
+  
+  chr.bp <- do.call(rbind, strsplit(snps[["SNP"]], ":"))
+  
+  snps[["CHR"]] <- chr.bp[,1]
+  snps[["BP"]] <- chr.bp[,2]
+  snps[["A1"]] <- "2"
+  snps[["A2"]] <- "1"
+  
+  snps.metal <- snps[,c("SNP", "A1", "A2", "OR", "SE", "P")]
+  colnames(snps.metal) <- c("SNP", "RefAllele", "NonRefAllele", "Beta", "BetaSE", "PValue")
+  
+  snps.metal[["N"]] <- nrow(mayo)
+  
+  dir.create(paste0("clean_data/3_meta_analysis/METAL_files/", x, "/"), showWarnings = FALSE)
+  
+  fwrite(snps.metal, paste0("clean_data/3_meta_analysis/METAL_files/", x, "/MAYO.tbl"), quote=FALSE, sep="\t", col.names=TRUE)
+})
+
+# Generate files for MSSM PHG
+lapply(rosmap.submodule.names, function(x) {
+  
+  cat("Processing files for Submodule", x, "\n")
+  
+  snps <- fread(paste0("results/3_meta_analysis/mssm/", x, ".pheno.output.ps"))
+  colnames(snps) <- c("SNP", "OR", "SE", "P")
+  
+  chr.bp <- do.call(rbind, strsplit(snps[["SNP"]], ":"))
+  
+  snps[["CHR"]] <- chr.bp[,1]
+  snps[["BP"]] <- chr.bp[,2]
+  snps[["A1"]] <- "2"
+  snps[["A2"]] <- "1"
+
+  snps.metal <- snps[,c("SNP", "A1", "A2", "OR", "SE", "P")]
+  colnames(snps.metal) <- c("SNP", "RefAllele", "NonRefAllele", "Beta", "BetaSE", "PValue")
+  
+  snps.metal[["N"]] <- nrow(mssm.phg)
+  
+  dir.create(paste0("clean_data/3_meta_analysis/METAL_files/", x, "/"), showWarnings = FALSE)
+  
+  fwrite(snps.metal, paste0("clean_data/3_meta_analysis/METAL_files/", x, "/MSSM.tbl"), quote=FALSE, sep="\t", col.names=TRUE)
+})
+
+# Generate files for MSSM FP
+lapply(rosmap.submodule.names, function(x) {
+  
+  cat("Processing files for Submodule", x, "\n")
+  
+  snps <- fread(paste0("results/3_meta_analysis/mssm_fp/", x, ".pheno.output.ps"))
+  colnames(snps) <- c("SNP", "OR", "SE", "P")
+  
+  chr.bp <- do.call(rbind, strsplit(snps[["SNP"]], ":"))
+  
+  snps[["CHR"]] <- chr.bp[,1]
+  snps[["BP"]] <- chr.bp[,2]
+  snps[["A1"]] <- "2"
+  snps[["A2"]] <- "1"
+  
+  snps.metal <- snps[,c("SNP", "A1", "A2", "OR", "SE", "P")]
+  colnames(snps.metal) <- c("SNP", "RefAllele", "NonRefAllele", "Beta", "BetaSE", "PValue")
+  
+  snps.metal[["N"]] <- nrow(mssm.fp)
+  
+  dir.create(paste0("clean_data/3_meta_analysis/METAL_files/", x, "/"), showWarnings = FALSE)
+  
+  fwrite(snps.metal, paste0("clean_data/3_meta_analysis/METAL_files/", x, "/MSSM.FP.tbl"), quote=FALSE, sep="\t", col.names=TRUE)
+})
+
+# Generate files for ROSMAP DLPFC
+lapply(rosmap.submodule.names, function(x) {
+  
+  cat("Processing files for Submodule", x, "\n")
+  
+  snps <- fread(paste0("results/3_meta_analysis/rosmap/", x, ".pheno.output.ps"))
+  colnames(snps) <- c("SNP", "OR", "SE", "P")
+  
+  chr.bp <- do.call(rbind, strsplit(snps[["SNP"]], ":"))
+  
+  snps[["CHR"]] <- chr.bp[,1]
+  snps[["BP"]] <- chr.bp[,2]
+  snps[["A1"]] <- "2"
+  snps[["A2"]] <- "1"
+  
+  snps.metal <- snps[,c("SNP", "A1", "A2", "OR", "SE", "P")]
+  colnames(snps.metal) <- c("SNP", "RefAllele", "NonRefAllele", "Beta", "BetaSE", "PValue")
+  
+  snps.metal[["N"]] <- nrow(rosmap)
+  
+  dir.create(paste0("clean_data/3_meta_analysis/METAL_files/", x, "/"), showWarnings = FALSE)
+  
+  fwrite(snps.metal, paste0("clean_data/3_meta_analysis/METAL_files/", x, "/ROSMAP.tbl"), quote=FALSE, sep="\t", col.names=TRUE)
+})
+```
+
+

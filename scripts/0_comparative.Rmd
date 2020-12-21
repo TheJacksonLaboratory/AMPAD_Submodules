@@ -1,0 +1,222 @@
+---
+title: "Significant SNP Comparative Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(GenomicRanges)
+library(SNPlocs.Hsapiens.dbSNP144.GRCh37)
+```
+
+I converted the data into `RDS` files to make it easier to read on subsequent runs.
+
+```{r load_data}
+# rosmap.sig.files <- list.files("../rosmap_pipeline/clean_data/5_gwas/5a_cleaning/", pattern="*.ps.sig")
+# rosmap.sig.files <- rosmap.sig.files[!grepl("_Case", rosmap.sig.files)]
+# rosmap.sig <- lapply(rosmap.sig.files, function(x) {
+#   read.table(
+#     paste0("../rosmap_pipeline/clean_data/5_gwas/5a_cleaning/", x), 
+#     header=F, sep="\t", stringsAsFactors=F,
+#     col.names=c("SNP", "Beta", "Beta.SE", "P")
+#   )
+# })
+# names(rosmap.sig) <- sapply(strsplit(rosmap.sig.files, "\\."), function(x) x[1])
+# saveRDS(rosmap.sig, "clean_data/0_comparative/rosmap.sig.RDS")
+rosmap.sig <- readRDS("clean_data/0_comparative/rosmap.sig.RDS")
+
+# mssm.sig.files <- list.files("../mssm_pipeline/clean_data/5_gwas/5a_cleaning/", pattern="*.ps.sig")
+# mssm.sig.files <- mssm.sig.files[!grepl("_Case", mssm.sig.files)]
+# mssm.sig <- lapply(mssm.sig.files, function(x) {
+#   read.table(
+#     paste0("../mssm_pipeline/clean_data/5_gwas/5a_cleaning/", x), 
+#     header=F, sep="\t", stringsAsFactors=F,
+#     col.names=c("SNP", "Beta", "Beta.SE", "P")
+#   )
+# })
+# names(mssm.sig) <- sapply(strsplit(mssm.sig.files, "\\."), function(x) x[1])
+# saveRDS(mssm.sig, "clean_data/0_comparative/mssm.sig.RDS")
+mssm.sig <- readRDS("clean_data/0_comparative/mssm.sig.RDS")
+
+# mssm.fp.sig.files <- list.files("../mssm_fp_pipeline/clean_data/5_gwas/5a_cleaning/", pattern="*.ps.sig")
+# mssm.fp.sig.files <- mssm.fp.sig.files[!grepl("_Case", mssm.fp.sig.files)]
+# mssm.fp.sig <- lapply(mssm.fp.sig.files, function(x) {
+#   read.table(
+#     paste0("../mssm_fp_pipeline/clean_data/5_gwas/5a_cleaning/", x),
+#     header=F, sep="\t", stringsAsFactors=F,
+#     col.names=c("SNP", "Beta", "Beta.SE", "P")
+#   )
+# })
+# names(mssm.fp.sig) <- sapply(strsplit(mssm.fp.sig.files, "\\."), function(x) x[1])
+# saveRDS(mssm.fp.sig, "clean_data/0_comparative/mssm.fp.sig.RDS")
+mssm.fp.sig <- readRDS("clean_data/0_comparative/mssm.fp.sig.RDS")
+
+# mayo.sig.files <- list.files("../mayo_pipeline/clean_data/5_gwas/5a_cleaning/", pattern="*.ps.sig")
+# mayo.sig.files <- mayo.sig.files[!grepl("_Case", mayo.sig.files)]
+# mayo.sig <- lapply(mayo.sig.files, function(x) {
+#   read.table(
+#     paste0("../mayo_pipeline/clean_data/5_gwas/5a_cleaning/", x), 
+#     header=F, sep="\t", stringsAsFactors=F,
+#     col.names=c("SNP", "Beta", "Beta.SE", "P")
+#   )
+# })
+# names(mayo.sig) <- sapply(strsplit(mayo.sig.files, "\\."), function(x) x[1])
+# saveRDS(mayo.sig, "clean_data/0_comparative/mayo.sig.RDS")
+mayo.sig <- readRDS("clean_data/0_comparative/mayo.sig.RDS")
+```
+
+Extract ROSMAP SNPs
+-------------------
+
+I take all SNPs that are suggestive (p-value smaller than 1e-05) across the subtype mapping and the eigengene mapping and pool them into one data frame.  
+
+For a given SNP, I chose the smallest p-value from the set of analyses (subtype and eigengene) and noted the source of the p-value. This is stored in `rosmap.snps.min`. 
+
+```{r}
+# All suggestive SNPs (including genome-wide significant SNPs)
+rosmap.sig <- lapply(rosmap.sig, function(x) x %>% dplyr::filter(P < 1e-05))
+
+# Pool into one frame
+rosmap.snps <- lapply(1:length(rosmap.sig), function(i, x, n) {
+  tbl <- x[[i]] %>% dplyr::select(SNP, P)
+  colnames(tbl)[2] <- n[i]
+  return(tbl)
+}, x=rosmap.sig, n=names(rosmap.sig))
+rosmap.snps <- Reduce(function(x, y) merge(x, y, by="SNP", all=TRUE), rosmap.snps)
+
+# Store source of minimum p-value for each SNP
+rosmap.snps.min <- data.frame(
+  SNP=rosmap.snps$SNP,
+  Source.ROSMAP=apply(rosmap.snps %>% dplyr::select(-one_of("SNP")), 1, function(x) names(x)[(which(x == min(x, na.rm=T)))[1]]),
+  P.ROSMAP=apply(rosmap.snps %>% dplyr::select(-one_of("SNP")), 1, function(x) min(x, na.rm=T)),
+  stringsAsFactors=F
+)
+head(rosmap.snps.min)
+saveRDS(rosmap.snps.min, "clean_data/0_comparative/rosmap.snps.min.RDS")
+write.csv(rosmap.snps.min, "results/0_comparative/rosmap.snps.min.csv", row.names=F)
+
+# Create a table of SNPs for CAPE
+# Load interesting SNPs from Jansen et al.
+jansen.et.al <- read.table("../raw_data/Jansen_Genome_Wide_SNPs_Top_203_variants_in_genome_wide_significant_loci_hg19.txt", sep="\t", header=T)
+jansen.et.al.snps <- paste0(jansen.et.al$Chr, ":", jansen.et.al$bp)
+
+write.table(
+  unique(c(rosmap.snps.min$SNP, jansen.et.al.snps)),
+  "results/0_comparative/suggestive.snps.txt", row.names=F, quote=F, col.names=F
+)
+```
+
+Replicate Results in Other Studies
+----------------------------------
+
+First, I reduced the other cohorts to the SNPs that were detected suggestively and significantly in ROSMAP. 
+
+```{r}
+mssm.sig <- lapply(mssm.sig, function(x) x %>% dplyr::filter(SNP %in% rosmap.snps.min$SNP))
+mssm.fp.sig <- lapply(mssm.fp.sig, function(x) x %>% dplyr::filter(SNP %in% rosmap.snps.min$SNP))
+mayo.sig <- lapply(mayo.sig, function(x) x %>% dplyr::filter(SNP %in% rosmap.snps.min$SNP))
+```
+
+I generated a similar minimum p-value structure for each cohort
+
+```{r}
+# Pool into one frame
+mssm.snps <- lapply(1:length(mssm.sig), function(i, x, n) {
+  tbl <- x[[i]] %>% dplyr::select(SNP, P)
+  colnames(tbl)[2] <- n[i]
+  return(tbl)
+}, x=mssm.sig, n=names(mssm.sig))
+mssm.snps <- Reduce(function(x, y) merge(x, y, by="SNP", all=TRUE), mssm.snps)
+
+# Store source of minimum p-value for each SNP
+mssm.snps.min <- data.frame(
+  SNP=mssm.snps$SNP,
+  Source.MSSM=apply(mssm.snps %>% dplyr::select(-one_of("SNP")), 1, function(x) names(x)[(which(x == min(x, na.rm=T)))[1]]),
+  P.MSSM=apply(mssm.snps %>% dplyr::select(-one_of("SNP")), 1, function(x) min(x, na.rm=T)),
+  stringsAsFactors=F
+)
+head(mssm.snps.min)
+saveRDS(mssm.snps.min, "clean_data/0_comparative/mssm.snps.min.RDS")
+
+# Pool into one frame
+mssm.fp.snps <- lapply(1:length(mssm.fp.sig), function(i, x, n) {
+  tbl <- x[[i]] %>% dplyr::select(SNP, P)
+  colnames(tbl)[2] <- n[i]
+  return(tbl)
+}, x=mssm.fp.sig, n=names(mssm.fp.sig))
+mssm.fp.snps <- Reduce(function(x, y) merge(x, y, by="SNP", all=TRUE), mssm.fp.snps)
+
+# Store source of minimum p-value for each SNP
+mssm.fp.snps.min <- data.frame(
+  SNP=mssm.fp.snps$SNP,
+  Source.MSSM.FP=apply(mssm.fp.snps %>% dplyr::select(-one_of("SNP")), 1, function(x) names(x)[(which(x == min(x, na.rm=T)))[1]]),
+  P.MSSM.FP=apply(mssm.fp.snps %>% dplyr::select(-one_of("SNP")), 1, function(x) min(x, na.rm=T)),
+  stringsAsFactors=F
+)
+head(mssm.fp.snps.min)
+saveRDS(mssm.fp.snps.min, "clean_data/0_comparative/mssm.fp.snps.min.RDS")
+
+# Pool into one frame
+mayo.snps <- lapply(1:length(mayo.sig), function(i, x, n) {
+  tbl <- x[[i]] %>% dplyr::select(SNP, P)
+  colnames(tbl)[2] <- n[i]
+  return(tbl)
+}, x=mayo.sig, n=names(mayo.sig))
+mayo.snps <- Reduce(function(x, y) merge(x, y, by="SNP", all=TRUE), mayo.snps)
+
+# Store source of minimum p-value for each SNP
+mayo.snps.min <- data.frame(
+  SNP=mayo.snps$SNP,
+  Source.MAYO=apply(mayo.snps %>% dplyr::select(-one_of("SNP")), 1, function(x) names(x)[(which(x == min(x, na.rm=T)))[1]]),
+  P.MAYO=apply(mayo.snps %>% dplyr::select(-one_of("SNP")), 1, function(x) min(x, na.rm=T)),
+  stringsAsFactors=F
+)
+head(mayo.snps.min)
+saveRDS(mayo.snps.min, "clean_data/0_comparative/mayo.snps.min.RDS")
+```
+
+I created tables that demonstrate the replication results of SNPs from ROSMAP in other cohorts.
+
+```{r}
+mssm.replication <- merge(mssm.snps.min, rosmap.snps.min, by="SNP") %>%
+  dplyr::select(SNP, Source.ROSMAP, P.ROSMAP, Source.MSSM, P.MSSM) %>%
+  dplyr::arrange(P.ROSMAP, Source.ROSMAP)
+head(mssm.replication)
+write.csv(mssm.replication, file="results/0_comparative/mssm.replication.csv", row.names=F)
+
+mssm.fp.replication <- merge(mssm.fp.snps.min, rosmap.snps.min, by="SNP") %>%
+  dplyr::select(SNP, Source.ROSMAP, P.ROSMAP, Source.MSSM.FP, P.MSSM.FP) %>%
+  dplyr::arrange(P.ROSMAP, Source.ROSMAP)
+head(mssm.fp.replication)
+write.csv(mssm.fp.replication, file="results/0_comparative/mssm.fp.replication.csv", row.names=F)
+
+mayo.replication <- merge(mayo.snps.min, rosmap.snps.min, by="SNP") %>%
+  dplyr::select(SNP, Source.ROSMAP, P.ROSMAP, Source.MAYO, P.MAYO) %>%
+  dplyr::arrange(P.ROSMAP, Source.ROSMAP)
+head(mayo.replication)
+write.csv(mayo.replication, file="results/0_comparative/mayo.replication.csv", row.names=F)
+```
+
+```{r}
+nhgri.ebi <- read.delim("../raw_data/gwas_catalog_v1.0-associations_e96_r2019-06-20.tsv", sep="\t", quote="", stringsAsFactors = F)
+
+ref.snps <- snpsByOverlaps(
+  SNPlocs.Hsapiens.dbSNP144.GRCh37, rosmap.snps %>%
+    dplyr::mutate(CHR=sapply(strsplit(SNP, ":"), function(x) x[1])) %>%
+    dplyr::mutate(BP.Start=as.numeric(sapply(strsplit(SNP, ":"), function(x) x[2]))) %>%
+    dplyr::mutate(BP.End=as.numeric(BP.Start+1)) %>%
+    dplyr::select(CHR, BP.Start, BP.End) %>%
+    makeGRangesFromDataFrame() %>% GPos()
+) %>% as.data.frame() %>%
+  dplyr::mutate(SNP=paste0(seqnames, ":", pos))
+
+studies <- nhgri.ebi[which(nhgri.ebi$SNPS %in% ref.snps$RefSNP_id),] %>%
+  dplyr::select(SNPS, PUBMEDID, FIRST.AUTHOR, DATE, JOURNAL, LINK, DISEASE.TRAIT, REPORTED.GENE.S., MAPPED_GENE)
+write.csv(studies, "results/0_comparative/nhgri.ebi.replication.csv", row.names=F)
+```
+

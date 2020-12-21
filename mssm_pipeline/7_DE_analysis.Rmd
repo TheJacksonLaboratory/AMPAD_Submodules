@@ -1,0 +1,122 @@
+---
+title: "Differential Expression Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(limma)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+
+```{r load_data, include=FALSE}
+subtypes <- readRDS("clean_data/4_stratification/mssm_patient_subtypes.RDS")
+subtypes$Patient <- as.character(subtypes$Patient)
+cleaned <- readRDS("clean_data/1_mssm_cleaning/mssm_cleaned.RDS")
+cleaned <- cleaned %>% dplyr::filter(grepl("PHG", Tissue.Diagnosis))
+gene.key <- readRDS("clean_data/1_mssm_cleaning/mssm_gene_key.RDS")
+
+# Split cleaned RNA expression into covariates and expression
+covars <- cleaned[,setdiff(colnames(cleaned), gene.key)]
+rownames(covars) <- cleaned$Patient
+expr <- cleaned[,gene.key]
+rownames(expr) <- cleaned$Patient
+
+# Determine number of subtypes
+n.subs <- length(unique(subtypes$Subtype)) - 1
+```
+
+Differential Expression Analysis
+--------------------------------
+
+I use the `limma` R package to run differential expression analysis to compare subtype expression to control expression. In this analysis, control includes both Non-AD and MCI patients. 
+
+```{r, include=FALSE}
+de.res <- list()
+
+for (subtype in LETTERS[1:n.subs]) {
+  # Reduce expression to subtype and control
+  patient.key <- union(
+    subtypes$Patient[subtypes$Subtype == "Control"], 
+    subtypes$Patient[subtypes$Subtype == subtype]
+  )
+  de.expr <- as.data.frame(t(expr)[,patient.key])
+  
+  # Create a factor describing the patient subtype
+  patient.fac <- factor(c(
+    rep("Control", table(subtypes$Subtype)["Control"]), 
+    rep(subtype, table(subtypes$Subtype)[subtype])
+  ), levels=c("Control", subtype))
+  
+  # Fit with LIMMA
+  fit <- lmFit(de.expr, design=model.matrix(~patient.fac))
+  
+  # Get top differentially expressed genes
+  fit <- eBayes(fit)
+  tt <- topTable(fit, number=Inf, coef=2)
+  print(head(tt))
+  
+  # Compile LIMMA results and generate volcano plot
+  de.res[[subtype]] <- data.frame(
+    Gene=rownames(tt),
+    Log.Fold.Change=tt$logFC,
+    Log.10.P.Value=-log10(tt$adj.P.Val)
+  )
+}
+```
+
+I created volcano plots to visualize the results of the differential expression analysis for each subtype. I labelled genes that had an absolute log fold change of greater than 1 and an adjusted p-value less than 0.1.
+
+```{r message=FALSE, warning=FALSE}
+for (subtype in LETTERS[1:n.subs]) {
+  limma.res <- de.res[[subtype]]
+  limma.res$Color <- "black"
+  limma.res$Color[limma.res$Log.10.P.Value > 1 & limma.res$Log.Fold.Change < 0] <- "royalblue1"
+  limma.res$Color[limma.res$Log.10.P.Value > 1 & limma.res$Log.Fold.Change > 0] <- "firebrick3"
+  
+  # Get Gene Names
+  limma.res.top <- rbind(
+    limma.res[limma.res$Log.Fold.Change < -1 & limma.res$Log.10.P.Value > 1,], 
+    limma.res[limma.res$Log.Fold.Change > 1 & limma.res$Log.10.P.Value > 1,]
+  )
+  if (subtype == "A") {
+    bitr.res <- bitr(limma.res.top$Gene %>% as.character, fromType="ENSEMBL", toType="SYMBOL", OrgDb=org.Hs.eg.db)
+    limma.res.top <- merge(limma.res.top, bitr.res, by.x="Gene", by.y="ENSEMBL")
+  } else {
+    # NOTE: SEARCH DONE MANUALLY
+    limma.res.top$SYMBOL = c("RN7SL14P", "RN7SL480P")
+  }
+  
+  print(ggplot() +
+    geom_point(data=limma.res, aes(x=Log.Fold.Change, y=Log.10.P.Value), color=limma.res$Color, size=I(1.5), alpha=0.6) +
+    geom_text_repel(data=limma.res.top, aes(x=Log.Fold.Change, y=Log.10.P.Value, label=SYMBOL)) +
+    geom_vline(xintercept=c(-1,1), lty=2, color="black", alpha=0.5) +
+    xlab("Log Fold Change") + ylab("-log10(p-value)") +
+    xlim(-2.1, 2.1) +
+    theme_linedraw() +
+    theme(
+      panel.grid.major=element_blank(),
+      panel.grid.minor=element_blank(),
+      panel.border=element_blank(),
+      axis.line=element_line(color="black")
+    ))
+  ggsave(filename=paste0("results/7_DE_analysis/volcano_", tolower(subtype), ".svg"), width=8, height=8)
+}
+```
+
+```{r, include=FALSE}
+# Save results for further pathway analysis
+for (subtype in LETTERS[1:n.subs]) {
+  limma.res <- de.res[[subtype]] %>% dplyr::select(Gene, Log.Fold.Change, Log.P.Value=Log.10.P.Value)
+  limma.res$Gene = as.character(limma.res$Gene)
+  rownames(limma.res) <- limma.res$Gene
+  saveRDS(limma.res, paste0("clean_data/7_DE_analysis/subtype.", subtype, ".limma.RDS"))
+}
+```

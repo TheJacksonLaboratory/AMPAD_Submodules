@@ -1,0 +1,232 @@
+---
+title: "Stratification de novo"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(NbClust)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(cluster)
+library(biwt)
+
+source("../utils/stratification_helpers.R")
+source("../utils/plot_theme.R")
+```
+
+```{r load_data}
+eigengenes <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_eigengenes.RDS")
+
+module.names <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_labels.RDS")
+module.names <- unlist(module.names)
+
+sig.genes <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_sig_genes.RDS")
+
+cleaned <- readRDS("clean_data/1_rosmap_cleaning/rosmap_cleaned.RDS")
+gene.key <- readRDS("clean_data/1_rosmap_cleaning/rosmap_gene_key.RDS")
+
+eigengene.subtypes <- readRDS("clean_data/4_stratification/rosmap_subtypes_map.RDS")
+
+# Separate into cases and controls
+cleaned.cases <- cleaned[cleaned$Diagnosis=="AD",]
+cleaned.controls <- cleaned[cleaned$Diagnosis=="CONTROL",]
+```
+
+Generate Matrix of Gene Expression
+----------------------------------
+
+Here I created a matrix of gene expression data. I created one for cases, controls, and combined sets.
+
+```{r}
+# Eigengene expression of cases
+module.vecs.cases <- cleaned.cases[,gene.key]
+# Eigengene expression of controls and MCIs
+module.vecs.controls <- cleaned.controls[,gene.key]
+# Total eigengene expression
+module.vecs <- cleaned[,gene.key]
+```
+
+Cluster Analysis
+----------------
+
+I performed cluster analysis on the gene expression data. I used the `NbClust` package, which uses democratized results across 30 different mathematical indices to determine the optimal number of clusters. I tested one reallocation method - K-Means - and three agglomerative methods - Ward D2, McQuitty (WPGMA), and Average (UPGMA). I used silhouettes as a method of determining the optimal clustering strategy. I used Tukey's Biweight to determine relations between patients rather than Pearson correlations or Euclidean distances since Tukey's Biweight is considered a robust metric.
+
+```{r}
+# Generate a distance matrix based on Tukey's Biweight
+#tukey.dist <- dist(biwt.cor(module.vecs.cases))
+
+cluster.by.method <- function(mtx, centers, method) {
+  if (method == "kmeans") {
+    k <- kmeans(mtx, centers)
+    return(list(Best.partition=k$cluster))
+  }
+  else {
+    h <- hclust(dist(mtx), method=method)
+    h.c <- cutree(h, k=centers)
+    return(list(Best.partition=h.c))
+  }
+}
+
+# Methods tested
+methods <- c("kmeans", "average", "mcquitty", "ward.D2")
+nbc.res <- list()
+
+set.seed(23498239)
+
+for (m in methods) {
+  
+  nbc.res[[m]] <- cluster.by.method(module.vecs.cases, 2, m)
+  
+  s <- silhouette(nbc.res[[m]]$Best.partition, dist(module.vecs.cases))
+  s.m <- data.frame(matrix(as.vector(s), nrow=nrow(s)))
+  colnames(s.m) <- dimnames(s)[[2]]
+  s.m <- s.m %>% 
+    dplyr::arrange(cluster, sil_width) %>%
+    dplyr::mutate(ID=1:nrow(s))
+  s.m$cluster <- as.factor(s.m$cluster)
+  print(
+    ggplot(s.m) +
+      geom_bar(aes(x=ID, y=sil_width, fill=cluster), stat="identity", width=1) +
+      scale_fill_brewer(palette="Dark2") +
+      labs(x="", y="Silhouette Width", fill="Cluster") +
+      coord_flip() +
+      basic_theme_big +
+      theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+  )
+  ggsave(paste0("results/9_stratification_de_novo/silhouette_", m, ".svg"), width=8, height=8)
+}
+```
+
+Looking at the results, I decided to use K-means since it has the best silhouette results. All four methods predicted 2 clusters.
+
+```{r}
+# Choose K-Means for the rest of the analysis
+nbc.res <- nbc.res[["kmeans"]]
+
+# Create a patient to subtype map
+subtypes <- data.frame(
+  Patient=rownames(module.vecs),
+  Subtype=c("A", "B")[as.numeric(nbc.res$Best.partition[rownames(module.vecs)])],
+  stringsAsFactors=F
+)
+subtypes$Subtype[is.na(subtypes$Subtype)] = "Control"
+subtypes$Subtype <- factor(subtypes$Subtype, levels=c("A", "B", "Control"))
+rownames(subtypes) <- subtypes$Patient
+
+saveRDS(nbc.res, "clean_data/9_stratification_de_novo/rosmap_clustering.RDS")
+saveRDS(subtypes, "clean_data/9_stratification_de_novo/rosmap_subtypes_map.RDS")
+
+# Run PCA to splay our data
+pca <- prcomp(module.vecs.cases)
+plot.data <- as.data.frame(pca$x[,1:2])
+plot.data$Subtype <- subtypes[rownames(plot.data),"Subtype"]
+
+ggplot(data=plot.data) +
+  geom_point(aes(PC1, PC2, color=Subtype), size=I(3), alpha=0.6) +
+  guides(color=guide_legend(title="Subtype")) +
+  scale_color_brewer(palette="Dark2") +
+  guides(size=FALSE) +
+  basic_theme_big
+ggsave(filename="results/9_stratification_de_novo/rosmap_clustering.svg", width=8, height=7.5)
+```
+
+Stratification Matrix
+---------------------
+
+I use a heatmap-like matrix to demonstrate how the eigengenes associate with specific subtypes generated in the clustering process.
+
+```{r}
+strat.mtx <- do.call(rbind, 
+  lapply(
+    split(module.vecs[subtypes$Patient,], subtypes$Subtype),
+    function(x) apply(x, 2, mean)
+  )
+)
+strat.mtx <- strat.mtx[nrow(strat.mtx):1,]
+strat.mtx <- t(apply(strat.mtx, 1, function(x) x / apply(abs(strat.mtx), 2, max)))
+
+h <- hclust(dist(t(strat.mtx)))
+strat.mtx <- strat.mtx[,h$order]
+
+p <- plot.strat(strat.mtx, main="", xlab="", ylab="", text=F)
+p$layers <- p$layers[1]
+p <- p + guides(fill=F) +
+  theme(
+    axis.ticks.x=element_blank(), 
+    axis.ticks.y=element_blank(),
+    panel.grid.major=element_blank(),
+    panel.border=element_blank(),
+    axis.text.x=element_blank()
+  )
+print(p)
+ggsave(file="results/9_stratification_de_novo/subtypes_heatmap.svg", plot=p, width=12, height=5)
+```
+
+Covariate Analysis
+------------------
+
+I tested if any covariates were enriched in any given subtype and may explain the variation in gene expression that led to the subtyping.
+
+```{r}
+# Sex
+trait <- factor(c("Female", "Male")[cleaned[rownames(subtypes),"Sex"]], levels=c("Female", "Male"))
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_bar(aes(x=Subtype, fill=Trait), position=position_fill(), color="black") +
+  scale_fill_brewer(palette="Set3") +
+  labs(x="", y="Proportion", fill="Sex") + 
+  basic_theme_big +
+  theme(legend.position="bottom")
+ggsave(filename="results/9_stratification_de_novo/trait_sex_by_subtype.svg", width=7, height=7)
+
+# APOE4 Status
+trait <- factor(c("None", "Heterozygous", "Homozygous")[cleaned[rownames(subtypes),"apoe_genotype"]+1])
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_bar(aes(x=Subtype, fill=Trait), position=position_fill(), color="black") +
+  scale_fill_brewer(palette="Set3") +
+  labs(x="", y="Proportion", fill="APOE4 Status") + 
+  basic_theme_big +
+  theme(legend.position="bottom")
+ggsave(filename="results/9_stratification_de_novo/trait_apoe4_by_subtype.svg", width=7, height=7)
+
+# Education
+trait <- cleaned[rownames(subtypes), "educ"]
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_boxplot(aes(x=Subtype, y=Trait, fill=Subtype)) +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=F) +
+  labs(x="", y="Years of Education") +
+  basic_theme_big
+ggsave(filename="results/9_stratification_de_novo/trait_education_by_subtype.svg", width=7, height=7)
+```
+
+Enrichment of Subtypes
+----------------------
+
+I was interested in checking if the subtypes developed using eigengene expression and cases only were similar to the de novo clustering. This would be strong evidence for the fact that the eigengenes and submodules (which represent a small fraction of the overall genes assayed) capture a large and meaningful chunk of the variation present in the data.
+
+```{r}
+trait <- eigengene.subtypes$Subtype
+plot.data <- subtypes
+plot.data$Trait <- trait
+ggplot(data=na.omit(plot.data)) +
+  geom_bar(aes(x=Subtype, fill=Trait), position=position_fill(), color="black") +
+  scale_fill_brewer(palette="Set3") +
+  labs(x="de novo Subtype", y="Proportion", fill="Eigengene Subtype") + 
+  basic_theme_big +
+  theme(legend.position="bottom")
+ggsave(filename="results/9_stratification_de_novo/subtype_by_de_novo_subtype.svg", width=7, height=7)
+```
+

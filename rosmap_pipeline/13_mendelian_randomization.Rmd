@@ -1,0 +1,400 @@
+---
+title: "Mendelian Randomization"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library(data.table)
+library(gsmr)
+library(biomaRt)
+
+source("../utils/plot_theme.R")
+```
+
+```{r}
+cleaned <- readRDS("clean_data/1_rosmap_cleaning/rosmap_cleaned.RDS")
+eigengenes <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_eigengenes.RDS")
+submodules <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_sig_genes.RDS")
+submodules.names <- readRDS("clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_labels.RDS")
+```
+
+Eigengene Correlation
+---------------------
+
+A quick heatmap showing the correlation between eigengenes.
+
+```{r}
+pheatmap(cor(eigengenes[,-(1:3)]))
+```
+
+Correlation with Diagnosis
+--------------------------
+
+```{r}
+by.dx <- split(eigengenes, eigengenes$Source.Diagnosis)
+by.dx <- lapply(by.dx, function(x) x[,unlist(submodules.names)])
+by.dx.mean <- do.call(rbind, lapply(by.dx, function(x) apply(x, 2, mean)))
+by.dx.mean <- apply(by.dx.mean, 2, function(x) x / max(abs(x))[1])
+by.dx.mean <- by.dx.mean[c("AD", "OTHER", "CONTROL"),]
+pheatmap(by.dx.mean, cluster_rows = F)
+```
+
+Generalized Summary-data-based Mendelian Randomization (GSMR)
+-------------------------------------------------------------
+
+In the language used in the literature, genetic variants are considered vehicles, submodule eigengenes are considered risk factors, and AD diagnosis is considered the outcome.
+
+Following is the process of Mendelian Randomization:
+
+1. Identify genetic variants that can act as vehicles for risk factors
+2. Select relatively independent genetic variants by accounting for LD
+3. Generate a LD correlation matrix to account for LD in any further analysis
+4. Perform Mendelian Randomization (GSMR)
+
+Here, I am generating a list of genetic variants that affect our risk factors (eigengenes). These are the suggestive SNPs that were found to be associated with our eigengenes.
+
+I also added in SNPs that were significantly associated with LOAD in the Jansen et al. meta-analysis. This should allow for reverse-GSMR, where we assess the effect of the disease on the eigengene. This might allow for some idea of temporal separation in transcriptomic effects.
+
+```{r include=FALSE}
+snps <- list()
+for (s in submodules.names) {
+  
+  eigengene <- fread(paste0("clean_data/5_gwas/5a_gwas_results/", s, ".pheno.output.ps"), sep="\t")
+  colnames(eigengene) <- c("SNP", "BETA", "SE", "P")
+  setkey(eigengene, SNP)
+  
+  snps[[length(snps) + 1]] <- eigengene[eigengene[["P"]] < 1e-05,"SNP"]
+  
+  eigengene[["CHR"]] <- sapply(strsplit(eigengene[["SNP"]], ":"), function(x) x[1])
+  eigengene[["BP"]] <- sapply(strsplit(eigengene[["SNP"]], ":"), function(x) x[2])
+  eigengene <- eigengene[,c("CHR", "SNP", "BP", "BETA", "SE", "P")]
+  fwrite(eigengene, file=paste0("clean_data/13_mendelian_randomization/assocs/", s, ".assoc"), sep="\t")
+}
+
+reported.snps <- read.delim("clean_data/13_mendelian_randomization/jansen_et_al_LOAD_summary_statistics.tsv", header=T, stringsAsFactors=F)
+snp.mart <- useMart("ENSEMBL_MART_SNP", dataset="hsapiens_snp", host="http://grch37.ensembl.org")
+reported <- getBM(
+  attributes = c("refsnp_id", "chr_name", "chrom_start"),
+  filters="snp_filter",
+  values=reported.snps$SNPS,
+  mart=snp.mart
+)
+reported <- reported %>%
+  dplyr::mutate(chr_name=as.numeric(chr_name)) %>%
+  dplyr::filter(!is.na(chr_name)) %>%
+  dplyr::select(CHR=chr_name, BP=chrom_start)
+reported <- paste0(reported$CHR, ":", reported$BP)
+
+snps <- unique(c(unlist(lapply(snps, function(x) x[["SNP"]])), reported))
+write.table(snps, "clean_data/13_mendelian_randomization/snps.txt", row.names=F, quote=F, col.names=F)
+```
+
+Using these SNPs, I generated a smaller data set that would make it easier to generate a LD matrix for the data. This bash script is also saved as `rosmap_pipeline/clean_data/13_mendelian_randomization/extract_snps.sh`. 
+
+```{bash eval=FALSE, include=FALSE}
+#!/bin/bash -login
+#PBS -l walltime=42:00:00,nodes=1:ppn=1,mem=8gb
+#PBS -M nikhil.milind@jax.org
+
+# Change directory to where script was called
+cd ${PBS_O_WORKDIR}
+
+module load plink/1.07
+
+plink \
+  --noweb \
+  --file /sdata/carter-lab/carter/AMPAD/WGS_PrelimProcessing/output/Joint/MAF05/Joint_allSNPjointMAF05 \
+  --extract snps.txt \
+  --recode
+```
+
+I use the following to generate clump the suggestive SNPs. This identifies lead SNPs that are relatively independent (accounting for LD). The script is called `clump_snps.sh`.
+
+```{bash eval=FALSE, include=FALSE}
+#!/bin/bash -login
+#PBS -l walltime=42:00:00,nodes=1:ppn=1,mem=8gb
+#PBS -M nikhil.milind@jax.org
+
+# Change directory to where script was called
+cd ${PBS_O_WORKDIR}
+
+module load plink/1.07
+
+plink \
+  --noweb \
+  --file /sdata/carter-lab/carter/AMPAD/WGS_PrelimProcessing/output/Joint/MAF05/Joint_allSNPjointMAF05 \
+  --clump assocs/Diagnosis.assoc,assocs/DLPFCturquoise_1.assoc,assocs/DLPFCturquoise_2.assoc,assocs/DLPFCblue_1.assoc,assocs/DLPFCblue_2.assoc,assocs/DLPFCblue_3.assoc,assocs/DLPFCblue_4.assoc,assocs/DLPFCbrown_1.assoc,assocs/DLPFCbrown_2.assoc,assocs/DLPFCyellow_1.assoc,assocs/DLPFCyellow_2.assoc,assocs/DLPFCyellow_3.assoc \
+  --clump-p1 0.00001
+```
+
+I use the following bash script on Helix to generate the SNP correlation file. I use the smaller data set I generated previously. I renamed the data to `Joint_allSNPjointMAF05_Suggestive_SNPs.*`. The script is called `generate_ld_corr.sh`.
+
+```{bash eval=FALSE, include=FALSE}
+#!/bin/bash -login
+#PBS -l walltime=42:00:00,nodes=1:ppn=1,mem=8gb
+#PBS -M nikhil.milind@jax.org
+
+# Change directory to where script was called
+cd ${PBS_O_WORKDIR}
+
+module load plink/1.07
+
+plink \
+  --noweb \
+  --file Joint_allSNPjointMAF05_Suggestive_SNPs \
+  --r2 \
+  --ld-window 999999 \
+  --ld-window-kb 2000 \
+  --ld-window-r2 0
+```
+
+I use the following bash script on Helix to generate major/minor alleles for each of the suggestive SNPs and their allele frequencies. The script is called `generate_summary_freqs.sh`.
+
+```{bash eval=FALSE, include=FALSE}
+#!/bin/bash -login
+#PBS -l walltime=42:00:00,nodes=1:ppn=1,mem=8gb
+#PBS -M nikhil.milind@jax.org
+
+# Change directory to where script was called
+cd ${PBS_O_WORKDIR}
+
+module load plink/1.07
+
+plink \
+  --noweb \
+  --file Joint_allSNPjointMAF05_Suggestive_SNPs \
+  --freq
+```
+
+
+From here, I can import the data back into the R workflow. I have a `Joint_allSNPjointMAF05_Suggestive_SNPs.ld` file containing the SNP correlations and a `Suggestive_SNPs_Clumped.clumped` file containing relatively independent SNPs.
+
+```{r}
+ld <- read.table("clean_data/13_mendelian_randomization/Joint_allSNPjointMAF05_Suggestive_SNPs.ld", header=T, stringsAsFactors=F)
+clumps <- read.table("clean_data/13_mendelian_randomization/Suggestive_SNPs_Clumped.clumped", header=T, stringsAsFactors=F)
+freqs <- read.table("clean_data/13_mendelian_randomization/Joint_allSNPjointMAF05_Suggestive_SNPs.frq", header=T, stringsAsFactors=F)
+snps <- clumps$SNP
+snps <- unique(c(snps, reported[which(reported %in% freqs $SNP)])) # Add back SNPs from Jansen et al. that are also assayed here
+
+# Create correlation matrix for LD
+ld.cor <- matrix(nrow=length(snps), ncol=length(snps), 0)
+rownames(ld.cor) <- snps
+colnames(ld.cor) <- snps
+
+# Reduce LD to clumped SNPs and add to matrix
+# Assume non-reported SNPs have no LD (0)
+# SNPs are in LD with themselves (1)
+ld <- ld %>%
+  dplyr::filter(SNP_A %in% snps & SNP_B %in% snps)
+
+for (i in 1:nrow(ld)) {
+  ld.cor[ld$SNP_A[i], ld$SNP_B[i]] = ld$R2[i]
+}
+diag(ld.cor) <- 1
+
+# Reduce freqs to clumped SNPs
+freqs <- freqs %>%
+  dplyr::filter(SNP %in% snps) %>%
+  dplyr::mutate(a1_freq = 1 - MAF) %>%
+  dplyr::select(SNP, a1=A1, a2=A2, a1_freq)
+
+saveRDS(snps, "clean_data/13_mendelian_randomization/mendelian_randomization_SNPs.RDS")
+saveRDS(ld.cor, "clean_data/13_mendelian_randomization/mendelian_randomization_LD_matrix.RDS")
+saveRDS(freqs, "clean_data/13_mendelian_randomization/mendelian_randomization_freqs.RDS")
+```
+
+Now, I run GSMR (Generalized Summary-data-based Mendelian Randomization) using the clumped, relatively independent SNPs and the LD correlation matrix.
+
+```{r include=FALSE}
+diagnosis <- fread("clean_data/5_gwas/5a_gwas_results/Diagnosis.pheno.output.ps", sep="\t")
+colnames(diagnosis) <- c("SNP", "bzy", "bzy_se", "bzy_pval")
+setkey(diagnosis, SNP)
+
+base.data <- merge(freqs, diagnosis)
+
+gsmrs <- list()
+gsmrs.reverse <- list()
+gsmrs.data <- list()
+
+for (s in submodules.names) {
+  
+  cat("Submodule: ", s, "\n")
+  
+  eigengene <- fread(paste0("clean_data/5_gwas/5a_gwas_results/", s, ".pheno.output.ps"), sep="\t")
+  colnames(eigengene) <- c("SNP", "bzx", "bzx_se", "bzx_pval")
+  setkey(eigengene, SNP)
+  
+  gsmr.data <- merge(base.data, eigengene) %>%
+    dplyr::mutate(bzx_n = 623, bzy_n = 623) %>%
+    dplyr::select(SNP, a1, a2, a1_freq, bzx, bzx_se, bzx_pval, bzx_n, bzy, bzy_se, bzy_pval, bzy_n)
+  
+  # Normalize effect sizes for eigengene
+  std_zx <- std_effect(gsmr.data$a1_freq, gsmr.data$bzx, gsmr.data$bzx_se, gsmr.data$bzx_n)
+  gsmr.data$std_bzx = std_zx$b
+  gsmr.data$std_bzx_se = std_zx$se
+  
+  # Run Forward GSMR analysis (does risk factor eigengene have an effect on disease risk)
+  gsmr.results <- gsmr(
+    gsmr.data$std_bzx, gsmr.data$std_bzx_se, gsmr.data$bzx_pval, gsmr.data$bzy, gsmr.data$bzy_se, gsmr.data$bzy_pval,
+    ld.cor, snps, 623, TRUE, 1e-05, 0.01, 0.01, 10, 0.05, 0.05, 0
+  )
+  
+  # Run Reverse GSMR analysis (does disease have an effect on eigengene)
+  gsmr.r.results <- gsmr(
+    gsmr.data$bzy, gsmr.data$bzy_se, gsmr.data$bzy_pval, gsmr.data$std_bzx, gsmr.data$std_bzx_se, gsmr.data$bzx_pval,
+    ld.cor, snps, 623, TRUE, 0.05, 0.01, 0.01, 10, 0.05, 0.05, 0
+  )
+  
+  cat("\t The estimated effect of the exposure on outcome: ", gsmr.results$bxy, "\n")
+  cat("\t Standard error of effect: ", gsmr.results$bxy_se, "\n")
+  cat("\t P-value for effect: ", gsmr.results$bxy_pval, "\n")
+  
+  cat("\t The estimated effect of the outcome on eigengene: ", gsmr.r.results$bxy, "\n")
+  cat("\t Standard error of effect: ", gsmr.r.results$bxy_se, "\n")
+  cat("\t P-value for effect: ", gsmr.r.results$bxy_pval, "\n")
+  
+  gsmrs[[length(gsmrs) + 1]] <- gsmr.results
+  gsmrs.reverse[[length(gsmrs.reverse) + 1]] <- gsmr.r.results
+  gsmrs.data[[length(gsmrs.data) + 1]] <- gsmr.data
+}
+
+saveRDS(gsmrs, "clean_data/13_mendelian_randomization/mendelian_randomization_forward.RDS")
+saveRDS(gsmrs.reverse, "clean_data/13_mendelian_randomization/mendelian_randomization_reverse.RDS")
+saveRDS(gsmrs.data, "clean_data/13_mendelian_randomization/mendelian_randomization_data.RDS")
+```
+
+Here, I perform a sensitivity analysis to identify potentially pleiotropic SNPs. In Mendelian randomization, it is important that the polymorphism has an effect only through the exposure. We would like to remove pleitropic SNPs from the analysis.
+
+```{r include=FALSE}
+for (k in 1:length(submodules.names)) {
+  s <- submodules.names[[k]]
+  g <- gsmrs[[k]]
+  g.r <- gsmrs.reverse[[k]]
+  g.d <- gsmrs.data[[k]][g$used_index,] # Restrict data to SNPs chosen previously by GSMR
+  g.d.r <- gsmrs.data[[k]][g.r$used_index,] # Restrict data to SNPs chosen previously by GSMR
+  
+  effects <- list()
+  for (i in 1:nrow(g.d)) {
+    
+    g.d.rem <- g.d[-i,] # Drop a SNP
+    
+    # Run Forward GSMR analysis (does risk factor eigengene have an effect on disease risk)
+    gsmr.results <- gsmr(
+      g.d.rem$std_bzx, g.d.rem$std_bzx_se, g.d.rem$bzx_pval, g.d.rem$bzy, g.d.rem$bzy_se, g.d.rem$bzy_pval,
+      ld.cor, g.d.rem$SNP, 623, TRUE, 1e-05, 0.01, 0.01, 10, 0.05, 0.05, 0
+    )
+    
+    effects[[length(effects)+1]] <- list(effect=gsmr.results$bxy, se=gsmr.results$bxy_se, p=gsmr.results$bxy_pval)
+  }
+  
+  effects.r <- list()
+  for (i in 1:nrow(g.d.r)) {
+    
+    g.d.rem <- g.d.r[-i,] # Drop a SNP
+    
+    # Run Reverse GSMR analysis (does disease have an effect on eigengene)
+    gsmr.r.results <- gsmr(
+      g.d.rem$bzy, g.d.rem$bzy_se, g.d.rem$bzy_pval, g.d.rem$std_bzx, g.d.rem$std_bzx_se, g.d.rem$bzx_pval,
+      ld.cor, g.d.rem$SNP, 623, TRUE, 0.05, 0.01, 0.01, 10, 0.05, 0.05, 0
+    )
+    
+    effects.r[[length(effects.r)+1]] <- list(effect=gsmr.r.results$bxy, se=gsmr.r.results$bxy_se, p=gsmr.r.results$bxy_pval)
+  }
+  
+  effects <- data.frame(
+    Sensitivity=factor(g.d$SNP, levels=g.d$SNP),
+    Effect=sapply(effects, function(x) x$effect),
+    SE=sapply(effects, function(x) x$se),
+    P=sapply(effects, function(x) x$p)
+  ) %>% dplyr::mutate(CI.High=Effect+SE, CI.Low=Effect-SE, Sig=ifelse(P < 0.05, "*", ""))
+  effects.r <- data.frame(
+    Sensitivity=factor(g.d.r$SNP, levels=g.d.r$SNP),
+    Effect=sapply(effects.r, function(x) x$effect),
+    SE=sapply(effects.r, function(x) x$se),
+    P=sapply(effects.r, function(x) x$p)
+  ) %>% dplyr::mutate(CI.High=Effect+SE, CI.Low=Effect-SE, Sig=ifelse(P < 0.05, "*", ""))
+  p <- ggplot(effects) +
+    geom_bar(aes(x=Sensitivity, y=Effect), stat="identity", color="black", fill="dodgerblue3") +
+    geom_errorbar(aes(x=Sensitivity, ymin=CI.Low, ymax=CI.High), width=0.2) + 
+    geom_text(aes(x=Sensitivity, y=Effect, label=Sig), hjust=1.5, vjust=0) +
+    geom_hline(aes(yintercept=g$bxy), lty=2, color="firebrick1") +
+    coord_flip() +
+    xlab("SNP Removed") +
+    ggtitle("Sensitivity Analysis of Mendelian Randomization", s) +
+    basic_theme_big
+  q <- ggplot(effects.r) +
+    geom_bar(aes(x=Sensitivity, y=Effect), stat="identity", color="black", fill="gold1") +
+    geom_errorbar(aes(x=Sensitivity, ymin=CI.Low, ymax=CI.High), width=0.2) + 
+    geom_text(aes(x=Sensitivity, y=Effect, label=Sig), hjust=1.5, vjust=0) +
+    geom_hline(aes(yintercept=g.r$bxy), lty=2, color="firebrick1") +
+    coord_flip() +
+    xlab("SNP Removed") + 
+    ggtitle("Sensitivity Analysis of Mendelian Randomization", paste0("Diagnosis on ", s)) +
+    basic_theme_big
+  ggsave(filename=paste0("results/13_mendelian_randomization/sensitivity_analysis/", s, ".png"), plot=p, width=8, height=8)
+  ggsave(filename=paste0("results/13_mendelian_randomization/sensitivity_analysis/", s, "_reverse.png"), plot=q, width=8, height=8)
+}
+```
+
+
+Write out to edge table for analysis in Cytoscape.
+
+```{r}
+edge.table <- lapply(1:length(gsmrs), function(i) {
+  g <- gsmrs[[i]]
+  g.r <- gsmrs.reverse[[i]]
+  g.d <- gsmrs.data[[i]]
+  s <- submodules.names[[i]]
+  
+  edges <- data.frame()
+  
+  if (g$bxy_pval < 0.05) {
+  
+    mr.edge <- c("Source"=s, "Target"="Diagnosis", "Effect"=abs(g$bxy), "Direction"=sign(g$bxy), "Type"="Submodule")
+    
+    snp.edges <- t(apply(subset(g.d, SNP %in% snps[g$used_index]), 1, function(x) {
+      c("Source"=x["SNP"], "Target"=s, "Effect"=abs(as.numeric(x["std_bzx"])), "Direction"=sign(as.numeric(x["std_bzx"])), "Type"="Locus")
+    }))
+    
+    edges <- rbind(edges, as.data.frame(rbind(mr.edge, snp.edges), stringsAsFactors=F))
+  }
+  
+  if (g.r$bxy_pval < 0.05) {
+    
+    mr.edge <- c("Source"="Diagnosis", "Target"=s, "Effect"=abs(g.r$bxy), "Direction"=sign(g.r$bxy), "Type"="Submodule")
+    
+    snp.edges <- t(apply(subset(g.d, SNP %in% snps[g.r$used_index]), 1, function(x) {
+      c("Source"=x["SNP"], "Target"="Diagnosis", "Effect"=abs(as.numeric(x["std_bzx"])), "Direction"=sign(as.numeric(x["std_bzx"])), "Type"="Locus")
+    }))
+    
+    edges <- rbind(edges, as.data.frame(rbind(mr.edge, snp.edges), stringsAsFactors=F))
+  }
+  
+  return(edges)
+})
+edge.table <- do.call(rbind, edge.table)
+
+# SNPs might have multiple effects in the reverse GSMR
+# Calculate the average effect and remove multiple edges
+mean.edges <- edge.table %>%
+  dplyr::filter(Target == "Diagnosis", Type == "Locus") %>%
+  dplyr::group_by(Source) %>%
+  dplyr::summarise(Mean.Effect=mean(as.numeric(Effect) * as.numeric(Direction))) %>%
+  dplyr::mutate(Effect=abs(Mean.Effect), Direction=sign(Mean.Effect), Target="Diagnosis", Type="Locus") %>%
+  dplyr::select(Source, Target, Effect, Direction, Type)
+
+edge.table <- rbind(
+  edge.table %>%
+    dplyr::filter(!(Target == "Diagnosis" & Type == "Locus")),
+  mean.edges
+)
+
+write.csv(edge.table, "results/13_mendelian_randomization/edge.table.csv", row.names=F, quote=F)
+```

@@ -1,0 +1,262 @@
+---
+title: "AMP-AD Submodules Report"
+author: "Nikhil Milind"
+date: "8/6/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(bookdown)
+library(knitr)
+```
+
+# Introduction
+
+This is a report of the analysis done during the Summer of 2019 for the AMP-AD Submodules. For a report on prior work, please refer to `Summer2018Report.html`. For any specific questions, feel free to email me at `nmilind2@ncsu.edu` or `nikhilmilind@gmail.com` or text me at `(919)454-0206`.
+
+# Directory Structure
+
+The directory strucure is rather complicated since it merges analyses from last summer with streamlined work this summer. Here is where you can go to find analyses and results of interest.
+
+## Summer 2019 Structure
+
+I decided to use R Markdown for a majority of the analyses, which required a different directory structure.
+
+**The `raw_data/` Directory: ** This directory is still used to house some of the raw data I needed for each analysis.
+
+**The `mayo_pipeline/` Directory: ** This directory contains all the analysis run on the Mayo cohort. It has a `raw_data/`, `clean_data/`, and `results/` directory internally that stores all the Mayo-specific results. The scripts are numbered in the order which I run them. I have tried to render as many of the scripts into HTML as I can, but refer back to the code for the most up-to-date analysis.
+
+**The `mssm_pipeline/` Directory: ** This directory contains all the analysis run on the MSBB cohort. It has a `raw_data/`, `clean_data/`, and `results/` directory internally that stores all the MSBB-specific results. The scripts are numbered in the order which I run them. I have tried to render as many of the scripts into HTML as I can, but refer back to the code for the most up-to-date analysis.
+
+**The `rosmap_pipeline/` Directory: ** This directory contains all the analysis run on the ROSMAP cohort. It has a `raw_data/`, `clean_data/`, and `results/` directory internally that stores all the ROSMAP-specific results. The scripts are numbered in the order which I run them. I have tried to render as many of the scripts into HTML as I can, but refer back to the code for the most up-to-date analysis.
+
+**The `documents/` Directory: ** This directory contains all the documents generated during the summer, including reports and presentations. The `manuscript_figures/` directory contains all the figures generated for the manuscript and supplementary materials. The `manuscript/` directory contains all the drafts and revisions of the manuscript. 
+
+**The `scripts/` Directory: ** This directory contains any scripts that were run for all three cohorts. This includes the generation of supplementary tables and the meta-analyses performed.
+
+## Summer 2018 Structure
+
+**The `clean_data/` Directory: ** This directory contains data that is transferred between scripts. The directories inside are labeled to match the scripts found in the `scripts/` directory. 
+
+**The `documents/` Directory: ** This directory contains any documents generated from last year. The `poster/`, `figures/`, and `doc_figures/` directories are specifically for the report and poster from last year.
+
+**The `exploratory_scripts/` Directory: ** This directory contains the scripts from the summer of 2018.
+
+**The `raw_data/` Directory: ** This directory contains any raw data that was obtained for the analysis. This includes data from Synapse, other labs, and online database resources.
+
+**The `results/` Directory: ** This directory contains any results generated from the scripts in the `exploratory_scripts/` and `server_scripts/` directories. The directories inside are labeled to match the script names.
+
+**The `server_scripts/` Directory: ** This directory contains scripts written to be run on Helix. 
+
+**The `utils/` Directory: ** This directory contains any additional helper scripts that are sourced multiple times.
+
+# Description of Project
+
+Most of the analysis was performed on the ROSMAP data, so I will use the scripts in the `rosmap_pipeline/` as an example. Since all the analyses are performed in R Markdown, detailed descriptions of each step are present in the specific analysis. I will only share a brief overview here.
+
+## Data Cleaning
+
+**Scripts: `1_rosmap_cleaning.Rmd`**
+
+I performed Principle Component Analysis and Hierarchical Clustering on the gene expression data I had for the cohort. I generated R objects for the data so that they can be read quicker into future analyses.
+
+Work was borrowed from scripts written by Cai John.
+
+```{r, out.width = "75%", fig.cap = "**Description**: PCA Plot of all decedents in the cohort, colored by diagnosis.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/1_rosmap_cleaning/rosmap_diagnosis_PCA.png")
+```
+
+## Iterative WGCNA
+
+**Scripts: `2_iterative_WGCNA_setup.Rmd`, `3_iterative_WGCNA_cleaning.Rmd`**
+
+Iterative WGCNA is run on Helix. In these two scripts, I describe how to run the requisite scripts on Helix and how to parse the generated data into R objects for future analysis. This is where the submodules are generated from the AMP-AD co-expression modules.
+
+```{r, out.width = "75%", fig.cap = "**Description**: Breakdown of AMP-AD co-expression modules into submodules. Each bar represents a module and each colored section represents a submodule. Submodules are labeled by decreasing size. A lot of genes were pruned in this process.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/3_iterative_WGCNA_cleaning/rosmap_iterative_wgcna_breakdown.png")
+```
+
+## Stratification of Patients
+
+**Scripts: `4_stratification.Rmd`**
+
+I performed clustering analysis using silhouettes in this script. I used silhouettes to determine which clustering method was appropriate for each cohort and then used `NbClust` to determine the number of clusters to generate. I visualize the stratification using scaled eigengene heatmaps. I also generate the subtype specificity metric for mapping. I perform covariate analysis to check if the subtypes capture any enrichment of cognitive or neuropathological outcomes. I also generate phenotype files for `EMMAX` in this script. 
+
+```{r, out.width = "75%", fig.cap = "**Description**: Example of silhouette widths when generating two DLPFC clusters using K-means. The average silhouette width is a clustering metric.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/4_stratification/silhouette_kmeans.svg")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Clustering of patients on a PCA plot using K-means.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/4_stratification/rosmap_clustering.svg")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Example of assessing APOE epislon 4 distribution across the subtypes to assess confounding effects on subtype selection.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/4_stratification/trait_apoe4_by_subtype.svg")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Example of assessing memory decline distribution across the subtypes to assess subtyping association with patient outcome.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/4_stratification/trait_memory_decline.svg")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Heatmap of scaled eigengenes by subtype to demonstrate pathological signatures captured by each set of decedents.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/4_stratification/subtypes_heatmap.svg")
+```
+
+## Single-Variant Association Mapping
+
+**Scripts: `5a_gwas_cleanup.py`, `5a_quality_control.Rmd`, `5b_gwas_setup.Rmd`, `5c_gwas_ensembl_vep_rest.py`, `5d_gwas_variants.Rmd`, `5e_gwas_lookup.py`, `5f_gwas_analysis.Rmd`**
+
+This analysis involved running `EMMAX` on Helix to perform single-variant association with eigengenes and subtypes.
+
+### Quality Control
+
+This involves the generation of QQ plots to assess the effect of population structure on the association study. I also calculate the genomic inflation factor here. It needed to be separate from the rest of the analysis because you need to use all ~6 million p-values to check. This is in `5a_quality_control.Rmd`. 
+
+```{r, out.width = "75%", fig.cap = "**Description**: QQ Plot of expected versus observed p-values in the Subtype A Specificity Metric mapping. The genomic inflation factor (lambda) is also reported.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/5_gwas/A_qqplot.png")
+```
+
+### SNP Filtering
+
+The rest of the analysis does not require all SNPs. I filter the SNPs to include only those with a p-value of p<0.05 for further analysis. The script must be executed from the `rosmap_pipeline/` directory using the command `python3 -W ignore 5a_gwas_cleanup.py`.
+
+### Manhattan Plots
+
+Manhattan plots are generated and tables of significant SNPs and neighboring loci are prepared in `5b_gwas_setup.Rmd`. I annotated the loci by hand using the UCSC genome browser. The results can be found in `rosmap_pipeline/results/5a_gwas/`. 
+
+```{r, out.width = "75%", fig.cap = "**Description**: Manhattan plot of DLPFCbrown_1 eigengene mapping with loci that I called using the UCSC genome browser and other tables generated in this analysis. I used Inkscape to add the locus labels to the plot manually.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/5_gwas/DLPFCbrown_1_manhattan_NM_96dpi.png")
+```
+
+### Loci Annotation
+
+I used the Variant Effect Predictor (VEP) provided by Ensembl to try annotating some of the SNPs. I used the REST API provided by Ensembl to perform the analysis. The script must be executed from the `rosmap_pipeline/` directory using the command `python3 -W ignore 5c_gwas_ensembl_vep_rest.py`. Following this, the `5d_gwas_variants.Rmd` script must be run. Finally, the last script must be executed from the `rosmap_pipeline/` directory using the command `python3 -W ignore 5e_gwas_lookup.py`.
+
+### Cross-Phenotype Analysis
+
+I tried to assess how SNPs affect multiple phenotypes measured in this study. However, I generated better methods of visualization later on so the `5f_gwas_analysis.Rmd` is somewhat moot.
+
+```{r, out.width = "75%", fig.cap = "**Description**: Heatmap of log-scaled p-values by SNP for phenotypes measured in the study. I found a better way of visualizing this using a network graph later.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/5_gwas/subtype.B.su.eigens.heatmap.png")
+```
+
+## Submodule Annotation
+
+**Scripts: `6a_submodule_annotation.Rmd`, `6b_submodule_annotation.Rmd`** 
+
+I generated annotations for each submodule. This included cell type specificity annotations using gene markers in the first script and pathway annotations in the second script. I also formally annotated the submodules for this cohort with names in the second script.
+
+```{r, out.width = "75%", fig.cap = "**Description**: Cell-type specific markers found in modules and submodules of the ROSMAP cohort.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/6_submodule_annotation/cellspecific.annot.svg")
+```
+
+## Differential Expression Analysis
+
+**Scripts: `7_DE_analysis.Rmd`, `8_DE_pathway_analysis.Rmd`**
+
+I performed differential expression analysis between subtypes and controls using `limma`. I generated volcano plots in the first script. I annotated the differentially expressed genes using pathway analysis in the second script.
+
+```{r, out.width = "75%", fig.cap = "**Description**: Volcano plot of differentially expressed genes in subtype B.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/7_DE_analysis/volcano_b.svg")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Running enrichment score of the KEGG Osteoclast Differentiation pathway in Subtype A.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/8_DE_pathway_analysis/osteo_diff_gene_ranks_A.svg")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Log fold change in genes found in the GO Microglial Activation term.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/8_DE_pathway_analysis/GO_microglia_activation_heat.svg")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Reactome pathways enriched in both subtypes compared using a bar plot of log-scaled p-values.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/8_DE_pathway_analysis/de_reactome_annots.svg")
+```
+
+## de Novo Stratification
+
+**Scripts: `9_stratification_de_novo.Rmd`**
+
+I performed de Novo stratification of the decedents to see how they would cluster with all gene expression data for the cases. They follow the two subtypes pretty well.
+
+```{r, out.width = "75%", fig.cap = "**Description**: Clustering of decedents on a PCA plot.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/9_stratification_de_novo/rosmap_clustering.svg")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Membership of cases into subtypes generated using eigengenes in the main analysis.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/9_stratification_de_novo/subtype_by_de_novo_subtype.svg")
+```
+
+## Module and Submdoule Overlap Analysis
+
+**Scripts: `10_heatmaps.Rmd`**
+
+I generated Jaccard overlap heatmaps for modules and submodules to functionally annotate them. In this script, I generate module overlap heatmaps from Ben's co-expression modules and my submodules. I annotated the submodules manually by annotating the intersect of all genes in a functional consensus cluster with Enrichr. I also assessed cell-type specificity of all submodules. I generated functional consensus clusters by tree cutting on the hierarchical clustering of the Jaccard matrix using an arbitrary cutoff.
+
+```{r, out.width = "75%", fig.cap = "**Description**: Jaccard overlap matrix of Ben's AMP-AD Co-expression Modules.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/10_heatmaps/module.heatmap_NM_300dpi.png")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Jaccard overlap matrix of my submodules.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/10_heatmaps/submodule.heatmap_NM_300dpi.png")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Overlap of cell-type specificity markers with the modules.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/10_heatmaps/module.cell.types.png")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Overlap of cell-type specificity markers with the submodules.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/10_heatmaps/submodule.cell.types.png")
+```
+
+## Genetic Architecture
+
+**Scripts: `11a_genetic_arch.py`, `11b_genetic_arch.Rmd`, `12_SNP_eQTL_overlap.Rmd`**
+
+I tried to answer some basic questions about genetic architecture using the association studies we performed.
+
+I created a SNP by phenotype matrix containing p-values and beta-values from the association studies using the first script. This script must be executed in the `rosmap_pipeline/` directory using the command `python3 -W ignore 11a_genetic_arch.py`. 
+
+I played around with different visualization methods until I landed on a Cytoscape figure. I export the data for the Cytoscape edge table at the end of the second script. I used Cytoscape to import the data and generate a directed network of loci. This Cytoscape session is saved in the `rosmap_pipelines/results/11_genetic_arch/` directory as `session.cys`. 
+
+I also checked if the SNPs that were associated with module eigengenes enriched for brain cis-eQTLS. Surprisingly, some module eigengnes did not. I performed this analysis in the third script.
+
+```{r, out.width = "75%", fig.cap = "**Description**: Directed network of loci detected by different phenotypes used for the single-variant association mapping.", echo=FALSE, fig.align='center'}
+include_graphics("documents/manuscript_figures/rosmap_locus_network_2_NM_600dpi.png")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Proportion of variants detected by each phenotype that are brain cis-eQTLs. The red dashed line represents proportion of all SNPs that are brain cis-eQTLs.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/12_SNP_eQTL_overlap/suggestive.SNPs.eQTL.proportion.png")
+```
+
+## Mendelian Randomization
+
+**Scripts: `13_mendelian_randomization.Rmd`**
+
+This was a fun side project where I tried to assess if we could measure the effect of eigengenes on diagnosis and vice versa. Mendelian randomization was performed using summary data generated from the association studies.
+
+Mendelian Randomization is an alternative to the randomized control trial to demonstrate some level of causality. Using association studies, we determine the effect of a SNP on an endophenotype and the effect of the same SNP on the outcome (diagnosis). If we assume that (1) the effect of the SNP on outcome is entirely through the endophenotype and (2) the association of the SNP is significant with both endophenotype and diagnosis, we can calculate the causal effect of the endophenotype on the outcome using the SNP as a genetic anchor of sorts.
+
+The first assumption is easily invalidated by pleiotropy, but this can be tested using sensitivity analysis. The results of that analysis are also included.
+
+```{r, out.width = "75%", fig.cap = "**Description**: Effect relationships as determined using Mendelian Randomization. Blue nodes represent loci used as vehicles for the analysis. The transparency of each edge represents the effect size. Since diagnosis is not scaled to eigengenes, the effect of diagnosis appears larger than that of the eigengene on the diagnosis. Effect sizes are beta values for the regression model.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/13_mendelian_randomization/effect_graph.png")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: Each bar represents the measured effect size of the endophenotype on the outcome if the SNP is removed from the analysis. We are looking for extreme increases or decreases, suggesting that the SNP is pleiotropic. All of these SNPs seem relatively good candidates..", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/13_mendelian_randomization/sensitivity_analysis/DLPFCbrown_2.png")
+```
+
+```{r, out.width = "75%", fig.cap = "**Description**: This sensitivity analysis is for the effect of diagnosis on DLPFCyellow_2. Notice that removing certain SNPs changes the measured effect drastically and the measurement is relatively uncertain.", echo=FALSE, fig.align='center'}
+include_graphics("rosmap_pipeline/results/13_mendelian_randomization/sensitivity_analysis/DLPFCyellow_2_reverse.png")
+```
+
+## Meta-Analysis of Four Cohorts
+
+**Scripts: `3a_meta_analysis.Rmd`, `3b_meta_analysis.Rmd`**
+
+This was another fun side project. I performed association studies previously for the TCX, PHG, FP, and DLPFC regions. I used METAL, a p-value merging meta-analysis software, to perform a meta-analysis across the cohorts. I developed a phenotype that was consistent across all four cohorts based on the submodule eigengenes from the DLPFC region. 
+
+```{r, out.width = "75%", fig.cap = "**Description**: This Manhatttan plot shows meta-analysis p-values for the DLPFCblue_1 eigengene generated for all four brain regions.", echo=FALSE, fig.align='center'}
+include_graphics("scripts/results/3_meta_analysis/METAL_files/DLPFCblue_1_NM_96dpi.png")
+```

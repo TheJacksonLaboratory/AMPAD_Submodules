@@ -1,0 +1,214 @@
+---
+title: "Summer Student 2018 Project Report"
+author: "Nikhil Milind"
+date: "8/7/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(bookdown)
+library(knitr)
+```
+
+# Introduction
+
+This is a document to provide a quick introduction to this project and the work I have done on it over the summer. I will briefly outline, in this document, the steps that were taken throughout the project. Specific information on different aspects of the project can be found in the `documents/` folder.
+
+# Data and Previous Analysis
+
+The project revolves around three human cohorts: Mayo, MSSM, and ROSMAP. We have gene expression and whole genome sequencing data from most patients from these cohorts. The Amp-AD consortium put has created a total of 30 modules of genes across all three cohorts. Cai John, who worked on this project before me, used the modules to analyze the ability to predict Alzheimer's risk. Cai created submodules by running Singular Value Decomposition on the modules. These submodules were then regressed against the Alzheimer's disease phenotype using LASSO models.
+
+# Introduction by Section
+
+Here I will introduce all the folders present in the root directory of my project. These are just general guidelines as to what you might find in each directory.
+
+**The `clean_data/` Directory**: This directory, in general, is going to contain data that is produced in one script and needed in another script. To avoid cluttering the `results/` directory, most of these data are stored here. The cleaned gene expression data can be found in here.
+
+**The `documents/doc_figures/` Directory**: This directory contains all the figures produced in this project. This was compiled by me specifically, so it will not update automatically. Files include figures made during scripts and figures used in the presentation and poster. It also contains important documents from my project, such as the final paper, final presentation, and proposal.
+
+**The `documents/` Directory**: This is an all-encompassing directory containing most of the documentation involved in this project. It includes all the slide decks I made throughout the summer, my poster, and my figures. Figures were edited using GIMP and Inkscape.
+
+**The `raw_data/` Directory**: This directory contains all the raw data provided by Amp-Ad / The Carter Lab. It contains old data that was used by Cai in his work. However, Amp-AD published clean data files that were easier to work with (had been normalized already, etc.) that I ended up using, which are also found in here. The modules created by Ben are also in here.
+
+**The `results/` Directory**: In general, this directory contained all the artifacts that I presented to the lab or data that needed to be given to other members of the lab. If something is not in the `clean_data/` directory, it's probably in here. The folders are labeled by the script of origin.
+
+**The `scripts/` Directory**: In here are all the `R` and `python` scripts that I created during the summer. The scripts are labeled by their order in the pipeline. Each script should have a few comments in the header that describe the goal of the script. In general, they tend to work well but might have some bugs. 
+
+**The `server_scripts/` Directory**: Some parts of my pipeline needed to be deployed on the HPC. The general process of deploying was to copy over the entire project folder onto the HPC, running the `bash` scripts found in this folder, and copying the whole project directory back once the process was complete. This made it easier to debug the code on my local machine before deploying it on the HPC. Most scripts are well-automated.
+
+**The `utils/` Directory**: In the process of creating some graphs, I had some graphics code that was extremely long and cluttered the original script. This directory contains all the graphing scripts I needed.
+
+# Importance of Directory Structure
+
+All my scripts assume the directory structure I have in this project. Moving things around will likely create bugs or unforseen behaviors!
+
+# Important Workflows
+
+### Cleaning the Data
+
+One of the important workflows in this project is cleaning the data. To clean the data that we already have, I borrowed Cai's work and implemented it on the newer data that I had. The relevant scripts for this workflow are `1a_mayo_cleaning.R`, `1b_mssm_cleaning.R`, and `1c_rosmap_cleaning.R`. Each cleaning process takes the raw data, runs hierarchical clustering and PCA, and transforms it into the right format. Covariate columns are often renamed to match across all three cohorts. The diagnoses are standardized to `"AD"`, `"CONTROL"`, and `"OTHER"`
+
+### Iterative WGCNA
+
+Running iterative WGCNA can be a bit challenging. The `1d_iterative_WGCNA.R` script takes the cleaned data and transforms it into the input format expected by the program. Once this script has been run, copy the project directory onto the HPC and run the `1d_iterative_WGCNA_module.sh` and `1d_iterative_WGCNA_cohort.sh` bash scripts in the `server_scripts/` directory. These will call `1d_iterative_module_indivisual.sh` with the correct parameters to deploy all the required iterative WGCNA processes. Once complete, the results will be put into `results/1_cleaning/` for each cohort.
+
+Since I borrowed a lot of Cai's work, I needed to transform the iterative WGCNA results back into submodule and eigengenes that could be used with the rest of his code. After finishing with the HPC, copy the directory back onto the local machine and run `1e_iterative_WGCNA_cleaning.R` to clean up the data and store it in formats that are acceptable for the rest of the scripts.
+
+### SVD and LASSO Analysis
+
+All the scripts for this workflow are borrowed directly from Cai's work. The first script, `2_build_svd_sets.R`, takes the modules provided by Ben and the cleaned data. SVD is performed on each module, and a certain number of eigengenes are chosen using elbow cutoff for each module. Submodules are then generated by determining the contributions of genes from the module expression data to each eigengene. Submodules, submodule labels, and the complete SVD analyses are then saved in `clean_data`. Eigengenes are stored separately for a prelinimary GWAS study. Eigengene and Eigensample (right-singular vectors) matrices were then created and stored for each cohort. 
+
+Cai ran some single-gene regression analysis in `3_single_gene_regressions.R`, but it did not turn out to be too predictive. He focused on LASSO modeling, which is found in `4_LASSO.R`, where he runs multiple LASSO models and stores the results. These models regress eigengenes against Alzheimer's disease for each cohort. The results are stored for future analysis.
+
+I began my summer project at this point. LASSO models choose which eigengenes should be used to represent the linear regression against Alzheimer's disease. We were interested in deciphering why certain eigengenes were being chosen by LASSO. I ran a clustering algorithm based on the classification rate of the models, which is found in `5_PCA_kmeans.R`. I treated the presence or absence of an eigengene in a LASSO model as a binary vector and clustered based on the vectors of models that Cai ran. Therefore, if there were 5 modules and 3 were included in a given model, a sample vector would be $\vec {x}=\{1,0,1,1,0\}$
+
+```{r lasso-cluster, out.width = "85%", fig.cap = "**Figure 1**: Clustering of LASSO models in MSSM by binary vectors representing the inclusion or exclusion of the eigengenes. Each point on the graph represents a LASSO model for the cohort. Graph is colored by cluster, and the size represents the AUC classification rate of each LASSO model.", echo=FALSE, fig.align='center'}
+include_graphics("results/5_PCA_kmeans/mssm_PCA_clustering.png")
+```
+
+We used the centroid (average parameters) of the cluster as a representative model of that cluster. To determine how significant the selection of modules was for any given centroid, we ran a permutation test where we sampled models at random and calculated their centroids to develop a null distribution. This helped us create the resulting graphs:
+
+```{r lasso-average, out.width = "85%", fig.cap = "**Figure 2**: Average parameters (centroid) as compared to null distributions for the centroid value. Values for the average parameter vector are shown as points, while their significance intervals (95% range of null distribution) are colored in as bars. Points outside the significance intervals are considered to not occur at random (basis of permutation testing).", echo=FALSE, fig.align='center'}
+include_graphics("results/5_PCA_kmeans/mssm_average_parameters.png")
+```
+
+### Module Enrichment
+
+Module enrichment can be performed using `6_module_enrichment.R`. It will perform KEGG, Reactome, and GO Enrichment on the submodules. You can choose to annotate either SVD or iterative WGCNA by changing the boolean value at the top of the script. An example of `GOSummaries` is presented below.
+
+```{r annotation, out.width = "85%", fig.cap = "**Figure 3**: An example of GO annotations produced using this script for the TCXturquoise module (inflammatory).", echo=FALSE, fig.align='center'}
+include_graphics("results/6_module_enrichment/mayo_go_annotations/turquoise_annotations.pdf")
+```
+
+### Model Heatmaps
+
+To compare models that were coming out of LASSO, we created heatmaps to compare the different models being chosen by LASSO. However, the most important heatmaps that came out of this project compare the gene overlap between different submodules. These are labeled "All Submodules Heatmap" and "All Submodules Hypergeometric". These graphs show the important distinctions between using SVD or iterative WGCNA when producing submodules. These heatmaps can be produced by running certain sections of `7_model_heatmaps.R`. A Jaccard heatmap from this script is shown below:
+
+```{r jaccard, out.width = "85%", fig.cap = "**Figure 4**: A Jaccard heatmap comparing gene overlap between submodules produced using iterative WGCNA.", echo=FALSE, fig.align='center'}
+include_graphics("results/7_model_heatmaps/all_submodules_iterative_heatmap.png")
+```
+
+### Case Module Enrichment/Analysis
+
+One interest was to understand how much each patient aligned with a given submodule. For this reason, I wrote out the `8_case_module_enrichment.R` and `9_case_module_analysis.R` scripts. However, we figured out that there are better ways to accomplish this than what I implemented here. Furthermore, these scripts take forever to run, even though I parallelized them and put them on the HPC. Therefore, these can be ignored entirely. 
+
+### Correlations
+
+I tried to answer the original question about Cai's work, which was: How well does the LASSO model using eigengenes predict disease risk? For each model that was produced using `5_PCA_kmeans.R`, I created a generalized linear model that contained all the additive and interactive effects of the eigengenes and regressed it against the AD phenotype. I then graphed the resulting p-values for the regression in `10_correlations.R`, as seen here:
+
+```{r correlations, out.width = "85%", fig.cap = "**Figure 5**: P-Values on a -log scale showing how significant certain eigengenes are as predictors of Alzheimer's in MSSM model 3 produced from the LASSO models.", echo=FALSE, fig.align='center'}
+include_graphics("results/10_correlations/interactive/mayo_GLM_add_int_cluster_3.png")
+```
+
+### Bayesian Networks
+
+In trying to understand why certain eigengenes might be selected in a given model, I decided to create Bayesian networks to model relationships between submodule eigengenes. These were created in `11_bayesian_network.R` and used the `bnlearn_helpers.R` script in the `utils/` directory to graph the bayesian networks. I used the `bnlearn` package to bootstrap bayesian networks. I did not get around to implement bayesian networks for submodule eigengenes created using iterative WGCNA. Here is a sample bayesian network produced for one of the LASSO models identified using PCA-kmeans:
+
+```{r bayesian, out.width = "85%", fig.cap = "**Figure 6**: Bayesian network for eigengenes found in LASSO model 3. In general, a bayesian network must be directed and acyclic. However, I used a bootstrapped algorithm and only displayed the network structures that occurred the most (>95%). The colors are poorly chosen, where blue is around 95% and red is around 100%.", echo=FALSE, fig.align='center'}
+include_graphics("results/11_bayesian_network/mayo_model_3.png")
+```
+
+### Stratification
+
+This is the core of the work I did in the project relating to Amp-AD. The goal of stratification was to determine if we could produce subtypes of patients with different types of Alzheimer's using the eigengene data that we had. The `12_stratification.R` script contains a majority of the results.
+
+As I discussed previously, the case module enrichment methodology was a poor choice of determining how well patients aligned with modules. Instead, we used the eigengenes as a measure of association with a submodule. For every patient, instead of using a vector of gene expression $\vec{p}=\{g_1, g_2, g_3, ..., g_n\}$, we took the values for each eigengene $\vec{p}=\{e_1, e_2, ..., e_n\}$. 
+
+I ran PCA on the eigengene expression data to see if there was any chance of clustering or subtyping. We observed some amount of modularity, but not distinct clusters. To determine how many clusters were present, I used the `NbClust` package in R, which determines (relatively agnostically) how many clusters should be created for a given set of data. I could specify which method to use, so I chose between Ward, k-means, and spectral k-means. 
+
+I began with spectral k-means, where I clustered on the first two dimensions of the PCA graph that I had created earlier. However, to avoid losing information from the other dimensions, I ran the same analysis with k-means and Ward. We ended up choosing Ward because it is a deterministic algorithm and we found out (later on) that the clustering method did not really matter too much. An example of ward clustering on the data can be seen here:
+
+```{r strat-cluster, out.width = "85%", fig.cap = "**Figure 7**: Clustering performed using NbClust followed by Ward. Patients clustered into three subtypes. The variance is proportional to the size of the overlayed circle.", echo=FALSE, fig.align='center'}
+include_graphics("results/12_stratification/mayo_PCA_clustering_submodules.png")
+```
+
+I created three types of stratification graphs. The first was a one-sample t-test to see if an eigengene was enriched in a certain phenotype. We know that patients with eigengene values close to 0 were not really associated with that eigengene. However, positive or negative values of eigengenes would suggest some form of association. Therefore, a one-sample t-test would check for such enrichment. Values that were not significant were left as 0, while significant values were scaled based on the values in each column. This graph is shown here:
+
+```{r strat-one-t-test, out.width = "85%", fig.cap = "**Figure 8**: Enrichment of eigengenes using a one-sample t-test to determine if the distribution of eigengene values in a given subtype is skewed in a non-zero manner.", echo=FALSE, fig.align='center'}
+include_graphics("results/12_stratification/mayo_stratification.png")
+```
+
+However, we also want to make sure that values are being compared to control cases. This might be important in cases where the eigengene is enriched in controls but not in cases. Therefore, I also ran a two-sample t-test comparing the distribution of eigengene values in controls to the eigengene values in subtypes. This graph is shown here:
+
+```{r strat-two-t-test, out.width = "85%", fig.cap = "**Figure 9**: Enrichment of eigengenes using a two-sample t-test to compare subtype values to control.", echo=FALSE, fig.align='center'}
+include_graphics("results/12_stratification/mayo_stratification_comparison.png")
+```
+
+Finally, I wanted to make a stratification plot with the values of the mean eigengene in each square to demonstrate the overall distribution of eigengene values. This graph is shown here:
+
+```{r strat-means, out.width = "85%", fig.cap = "**Figure 10**: Mean value of eigengene in a given subtype. Demonstrates the distribution of eigengene values across subtypes.", echo=FALSE, fig.align='center'}
+include_graphics("results/12_stratification/mayo_stratification_means.png")
+```
+
+We also wanted to see if there were any sex-specific effects in any subtypes that led to enrichment of females (or males). Therefore, we ran Fisher Exact Tests comparing the sex ratio between subtypes and the cohort total. This produced graphs such as this:
+
+```{r strat-sex, out.width = "85%", fig.cap = "**Figure 11**: Distribution of sex shown in the cohort, in cases, in controls, and in specific subtypes of patients. In this case, the Mayo subtype B patients showed a significant enrichment for females, but subtyps A and C did not.", echo=FALSE, fig.align='center'}
+include_graphics("results/12_stratification/mayo_sex_distribution_summary.png")
+```
+
+Finally, I calculated the two quantitative phenotypes that were important in this project: the subtype quantitative phenotype and the eigengenes. The eigengenes already existed, so I just formatted them correctly. I then calculated the distance between the centroid and each patient to make the subtype phenotype. We also calculated subtype phenotypes where the controls were 0 and the cases were inverse distance values so as to prioritize cases in the mapping. However, we did not implement this phenotype in our mapping.
+
+### Differential Expression across Subtypes
+
+I had created `13_pathway_stratification.R` to see if there are any differentially expressed genes that differ between cohorts. The code works, but I have not adapted it for the iterative WGCNA submodules. I chose 4 GO Annotations that we specifically cared about and found all genes relating to each one. I then checked for differential gene expression in those sets of genes. Here is an example of the inflammatory GO term's gene overlap:
+
+```{r pathway-venn, out.width = "85%", fig.cap = "**Figure 12**: This is the GO term for 'Immune System Process.' This Venn diagram shows which genes overlapped across cohorts for the GO term.", echo=FALSE, fig.align='center'}
+include_graphics("results/13_pathway_stratification/GO:0002376_gene_overlap.png")
+```
+
+Here is an example of genes in Mayo's cluster C that were differentially expressed for immune system processes.
+
+```{r pathway-genes, out.width = "85%", fig.cap = "**Figure 13**: A volcano plot showing differentially expressed genes in subtype C in mayo that are related to the immune system.", echo=FALSE, fig.align='center'}
+include_graphics("results/13_pathway_stratification/mayo/mayo_GO:0002376_cluster_C.png")
+```
+
+I continued some of this work in `14_gene_specific_clustering.R`, which used the differentially expressed genes identified above to observe in PCA and see if any principle component was particularly predictive for a given subtype. The results looked suggestive but were inconclusive. An example is shown below:
+
+```{r pathway-pca, out.width = "85%", fig.cap = "**Figure 14**: PCA of patients represented using only significantly differentially expressed genes that overlapped across all three cohorts. PC1 is somewhat suggestive of a trend for the different subtypes, but no conclusions were drawn.", echo=FALSE, fig.align='center'}
+include_graphics("results/14_gene_specific_clustering/rosmap_sig_genes_PCA.png")
+```
+
+### *De Novo* Clustering
+
+I performed *de novo* clustering of the patients (without *a priori* knowledge of Alzheimer's disease status) to observe if clusters created agnostically matched any of the subtypes we had generated. I did not get time to convert this to the iterative WGCNA data, so I am unsure if this *de novo* clustering still works. Furthermore, I still may be using spectral k-means clustering instead of the Ward method that was discussed previously. However, graphs such as these are produced by `15_stratification_de_novo.R`:
+
+```{r de-novo, out.width = "85%", fig.cap = "**Figure 15**: The distribution of subtypes (that were produced using SVD decomposition) and controls across the *de novo* clusters. Some patterns are visible, but this was not replicated for iterative WGCNA.", echo=FALSE, fig.align='center'}
+include_graphics("results/15_stratification_de_novo/rosmap_subtypes_distribution.png")
+```
+
+### GWAS Interpretation Pipeline
+
+The code for interpretting GWAS is a complicated pipeline due to the order in which scripts need to be run. I will briefly try and run through the process here.
+
+I provided Christoph with data produced using the Stratification workflow. That data was used to run a genome-wide association mapping software (EMMAX) that returned the significance of each of the 6 million SNPs queried through whole genome sequencing. The file had four columns: SNP location, Beta effect, Beta standard error, and p-value. These files are stored in `mayo/`, `mssm/`, and `rosmap/` respectively. All files produced by the pipeline (other than step 1) will be stored in `mayo_results/`, `mssm_results/`, and `rosmap_results/`. These are all found in `results/16_gwas/`.
+
+These are the files that have to be run, in this specific order:
+
+1. Run `16_gwas_cleanup.py` with the following command: `python3 -W ignore 16_gwas_cleanup.py`
+2. Run the sections titled "Static", "Libraries", and "Setup" in `16_gwas.R`
+3. Run `16_gwas_ensembl_vep_rest.py` with the following command: `python3 -W ignore 16_gwas_ensembl_vep_rest.py`
+4. Run the section titled "Merge All Data" in `16_gwas.R`
+5. Run `16_gwas_lookup.py` with the following command: `python3 -W ignore 16_gwas_lookup.py`
+
+The first step takes the SNPs from EMMAX and creates a file with only the significant SNPs (p < 0.05) and ignores the rest. This makes it easier to compute in the rest of the pipeline. This will be stored as a `.ps.sig` file.
+
+The second step takes the most significant SNPs and identifies genes that are in a ~200kb region around the SNP that might be of interest to us. These are stored in `_genes.csv` files. Next, a Manhattan plot of the data is created. This is stored in `_manhattan.png` files. Finally, the ENSEMBL REST API is used to call SNPs in the data. The RefSNP ID for each variant is identified using this process and stored in `_suggestive_SNPs.csv` files. 
+
+The third step takes the suggestive SNPs and identifies potential effects of the variants using the Variant Effect Predictor program by ENSEMBL. This is queried using the REST API, but through python since it is easier to go through the large amount of data. This produces the `_suggestive_SNPs.csv_VEP.csv` files.
+
+The fourth step merges all the data produced so far and creates the `_all.csv` files.
+
+The last step looks up SNPs that have been previously associated with Alzheimer's using GTex data. The closest previously associated SNP is then recorded in a new column, along with pertinent information about the study. This data is stored in `mayo_results/`, `mssm_results/`, and `rosmap_results/`. These are the `.csv` files that are left over after all the ones I have mentioned previously are accounted for. An example would be `MSBB_SubtypeB_Distance.csv`.
+
+The files produced using the last step are the most important, since they have consolidated all the information available. The second part of the script in step 5 is not yet functional, but the first part works just fine and gets the job done. The second part of the script is supposed to find suggestive SNPs in eigengene scans that are close to SNPs in the subtype scans. This would help decompose subtype scans by eigengene contributions.
+
+An example of a Manhattan plot produced by this pipeline is shown below:
+
+```{r manhattan, out.width = "85%", fig.cap = "**Figure 16**: A Manhattan plot of ROSMAP Subtype C (distance phenotype).", echo=FALSE, fig.align='center'}
+include_graphics("results/16_gwas/rosmap_results/ROSMAP_SubtypeC_Distance_manhattan.png")
+```
+
+# Contact Information
+
+If you need me for anything, I can be reached at nmilind2@ncsu.edu (preferred) or nikhilmilind@gmail.com. You can text me at (919)454-0206 if I'm not responding to my email for whatever reason.

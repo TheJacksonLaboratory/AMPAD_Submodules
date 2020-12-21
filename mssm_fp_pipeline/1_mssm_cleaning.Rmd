@@ -1,0 +1,148 @@
+---
+title: "MSSM Cleaning"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggdendro)
+library(ggplot2)
+
+source("../utils/plot_theme.R")
+```
+
+```{r load_data}
+labels <- read.table("raw_data/MSSM_ageCensoredCovariates.tsv", header=TRUE, sep="\t", row.names=1)
+metadata <- read.csv("raw_data/MSSM_metadata.csv", header=TRUE)
+rnaseq.covars <- read.csv("raw_data/MSSM_RNASeq_covars.csv", header=TRUE)
+cleaned <- read.table("raw_data/MSSM_FP_STG_PHG_IFG_netResidualExpression_imputed.tsv", header=TRUE, sep="\t", row.names=1)
+
+# Extract the patient IDs
+patient.key <- colnames(cleaned)
+
+# Match data structures
+cleaned <- t(cleaned)
+cleaned <- apply(cleaned, 2, as.numeric)
+cleaned <- as.data.frame(cleaned)
+
+# Merge labels (covariates) and data
+cleaned$Patient <- patient.key
+labels$Patient <- row.names(labels)
+
+# Add Amyloid Plaque
+id.match <- unique(rnaseq.covars[,c(2,7)])
+rownames(id.match) <- id.match$sampleIdentifier
+rownames(metadata) <- metadata$RNAseq_SampleID
+indiv.identifiers <- id.match[patient.key,]$individualIdentifier
+cleaned <- cbind(metadata[indiv.identifiers,]$PlaqueMean, cleaned)
+colnames(cleaned)[1] <- "PlaqueMean"
+
+cleaned <- merge(labels, cleaned, by="Patient")
+```
+
+Principle Component Analysis
+----------------------------
+
+The data has been extensively transformed. We will perform PCA decomposition on the expression data to make sure that there are no obvious outliers.
+
+```{r}
+# Any resulting PCs with SD < 0.01 are not included
+pca.results <- cleaned[,(ncol(labels)+1):ncol(cleaned)] %>%
+  prcomp(scale=F, center=T, tol=0.01)
+#summary(pca.results)$importance
+
+# Visualize the PCA
+pca.plot <- cbind(Diagnosis=as.factor(cleaned$BrainRegion.Diagnosis), as.data.frame(pca.results$x[,1:2]))
+ggplot(data=pca.plot, aes(x=PC1, y=PC2, color=Diagnosis)) +
+  geom_point() +
+  ggtitle("PCA of Samples Colored by Diagnosis") +
+  xlab("PC1 (17.4921%)") + 
+  ylab("PC2 (10.89594%)") +
+  basic_theme_big
+ggsave("results/1_mssm_cleaning/mssm_diagnosis_PCA.png", width=8, height=8)
+```
+
+Hierarchical Clustering
+-----------------------
+
+Generate a dendrogram to visualize relationships between samples.
+
+```{r}
+# Create dendrogram
+row.names(cleaned) <- 1:nrow(cleaned)
+cleaned$ID <- 1:nrow(cleaned)
+dend.expr <- cleaned[,(ncol(labels)+1):ncol(cleaned)] %>% # Isolate expression
+  scale %>% # Normalize
+  dist %>% # Calculate distance
+  hclust %>% # Cluster hierarchially
+  as.dendrogram()
+
+# Plot dendrogram
+dendro.data <- dendro_data(dend.expr, type="rectangle")
+dendro.data$labels <- merge(x=dendro.data$labels, y=cleaned, by.x="label", by.y="ID")
+dendro.data$labels[,"label"] <- patient.key[dendro.data$labels[,"label"]]
+
+# Plot dendrogram with colored branches and legend
+ggplot() +
+  geom_segment(data=segment(dendro.data), aes(x=x, y=y, xend=xend, yend=yend)) +
+  geom_segment(data = dendro.data$segments %>%
+                 filter(yend == 0) %>%
+                 left_join(dendro.data$labels, by="x"), aes(x=x, y=y.x, xend=xend, yend=yend, color=BrainRegion.Diagnosis)) +
+  geom_text(data=label(dendro.data), aes(x=x, y=y, label=label, color=BrainRegion.Diagnosis, hjust=0), size=1) +
+  coord_flip() +
+  scale_y_reverse(expand=c(0.2, 0)) +
+  scale_colour_brewer(palette="RdBu") +
+  basic_theme_big +
+  theme_dendro() +
+  ggtitle("Hierarchical Clustering of Patients Colored by Diagnosis")
+ggsave("results/1_mssm_cleaning/mssm_diagnosis_hierarchial_clustering.png", width=8, height=8)
+```
+
+Tissue Removal and Cleaning
+---------------------------
+
+Removed tissue names from the diagnoses. For the sake of future analyses, all MCI patients were considered controls and were annotated as such in the `Diagnosis` column. The `Source.Diagnosis` column keeps track of the original diagnosis.
+
+```{r}
+# Remove ID column created previously
+cleaned <- cleaned[,-which(colnames(cleaned) == "ID")]
+
+# Rename column containing diagnosis
+colnames(cleaned)[colnames(cleaned)=="BrainRegion.Diagnosis"] <- "Tissue.Diagnosis"
+
+# Remove tissue name from diagnosis
+diagnosis <- gsub("FP.", "", cleaned$Tissue.Diagnosis)
+diagnosis <- gsub("STG.", "", diagnosis)
+diagnosis <- gsub("PHG.", "", diagnosis)
+diagnosis <- gsub("IFG.", "", diagnosis)
+src.diagnosis <- diagnosis
+
+# Convert "OTHER" phenotypes to control
+diagnosis <- gsub("OTHER", "CONTROL", diagnosis)
+
+# Add diagnosis column before genes
+cleaned <- cbind(cleaned[,1:19], diagnosis, src.diagnosis, cleaned[,-(1:19)])
+colnames(cleaned)[20] <- "Diagnosis"
+colnames(cleaned)[21] <- "Source.Diagnosis"
+
+# Get final list of genes
+gene.key <- colnames(cleaned)[-(1:21)]
+
+# Rename sex
+cleaned <- dplyr::rename(cleaned, Sex=SEX)
+
+# Make patients the key
+rownames(cleaned) <- cleaned$Patient
+```
+
+```{r}
+# Save files for future analyses
+saveRDS(patient.key, file=paste0("clean_data/1_mssm_cleaning/mssm_patient_key.RDS"))
+saveRDS(gene.key, file=paste0("clean_data/1_mssm_cleaning/mssm_gene_key.RDS"))
+saveRDS(cleaned, file=paste0("clean_data/1_mssm_cleaning/mssm_cleaned.RDS"))
+```
+

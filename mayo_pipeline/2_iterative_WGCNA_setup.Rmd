@@ -1,0 +1,68 @@
+---
+title: "Iterative WGCNA Setup"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(nnet)
+
+source("../utils/plot_theme.R")
+```
+
+```{r load_data}
+# Load clean gene expression data
+mayo.cleaned <- readRDS("clean_data/1_mayo_cleaning/mayo_cleaned.RDS")
+
+# Load module information by Ben
+modules <- read.table("raw_data/Modules_March2018.txt", sep="\t", header=T)
+module.names <- unique(modules$Module)
+```
+
+Module-Level Iterative WGCNA Setup
+----------------------------------
+
+I generated `.tsv` files that can be used as inputs for the `iterativeWGNCA` program on the cluster. In this case, we wanted to try running `iterativeWGCNA` on every module that Ben created for each study.
+
+```{r}
+# Remove header information
+mayo <- mayo.cleaned[,-(1:20)]
+
+# Transpose matrices
+mayo <- t(mayo)
+
+# Add gene names as the first column
+mayo <- cbind(rownames(mayo), mayo)
+
+# Add patients to the column names
+colnames(mayo) <- c("Gene", mayo.cleaned$Patient)
+
+# Read in module information
+for (module.index in 1:length(module.names)) {
+  
+  if (length(grep("TCX", module.names[module.index])) == 0) {
+    next
+  }
+  # MAYO modules
+  # Extract genes and make sure MAYO transcripts exist
+  # Write tab-spaced input file for iterativeWGCNA
+  genes <- subset(modules, Module==module.names[module.index])$GeneID
+  genes <- intersect(rownames(mayo), genes)
+  write.table(mayo[as.character(genes),], file=paste0("clean_data/2_iterative_WGCNA_setup/", module.names[module.index], ".tsv"), row.names=F, col.names=T, sep="\t", quote=F)
+}
+```
+
+Cohort-Level Iterative WGCNA Setup
+----------------------------------
+
+In this case, I generate files required to run `iterativeWGCNA` on each cohort. This involves ignoring Ben's modules and generating our own.
+
+```{r}
+write.table(mayo, file="clean_data/2_iterative_WGCNA_setup/iterativeWGCNA.tsv", row.names=F, col.names=T, sep="\t", quote=F)
+```
+

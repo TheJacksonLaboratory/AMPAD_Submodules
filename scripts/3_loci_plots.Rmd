@@ -1,0 +1,93 @@
+---
+title: "Loci Plots"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+
+source("../utils/plot_theme.R")
+```
+
+```{r}
+rosmap.sig <- readRDS("clean_data/0_comparative/rosmap.sig.RDS")
+rosmap.sig <- lapply(rosmap.sig, function(x) {
+  x %>%
+    dplyr::filter(P<1e-05) %>%
+    dplyr::mutate(CHR=sapply(strsplit(SNP, ":"), function(y) as.numeric(y[1]))) %>%
+    dplyr::mutate(BP=sapply(strsplit(SNP, ":"), function(y) as.numeric(y[2])))
+})
+```
+
+```{r}
+D.CHANGE = 1e+05
+# Take a matrix with BP and Rank as columns
+# BP and rank must be in ascending order
+rank.window.cut <- function(x) {
+  dBP = x$BP[2:nrow(x)] - x$BP[1:(nrow(x)-1)]
+  cutoffs = x[1:(nrow(x)-1),"BP"] + (dBP / 2)
+  return(cutoffs[dBP > D.CHANGE])
+}
+
+# Iterate over all 22 chromosomes
+regions <- lapply(rosmap.sig, function(analysis) {
+  na.omit(do.call(rbind, lapply(1:22, function(i) {
+    if (!(i %in% analysis$CHR)) {
+      # No SNPs on chromosome
+      return(data.frame())
+    }
+    
+    plot.data <- analysis %>% dplyr::filter(CHR == i) %>%
+      dplyr::select(SNP, BP) %>% dplyr::arrange(BP) %>% dplyr::mutate(Rank=1:n())
+    
+    # print(
+    #   ggplot(data=plot.data) +
+    #     geom_point(aes(x=Rank, y=BP), size=I(1)) +
+    #     geom_line(aes(x=Rank, y=BP), size=I(0.5)) + 
+    #     geom_hline(yintercept=rank.window.cut(plot.data), lty=2, size=I(0.25), color="firebrick1") + 
+    #     basic_theme_big
+    # )
+    
+    snps <- analysis %>% dplyr::filter(CHR == i)
+    cuts <- rank.window.cut(plot.data)
+    lower.bounds <- c(0, cuts)
+    upper.bounds <- c(cuts, Inf)
+    
+    regions <- lapply(1:length(lower.bounds), function(k) snps[snps$BP >= lower.bounds[k] & snps$BP < upper.bounds[k],])
+    regions <- do.call(rbind, lapply(regions, function(x) x[(which(x$P == min(x$P)))[1],]))
+    rownames(regions) <- NULL
+    return(regions)
+  })))
+})
+```
+
+```{r}
+plot.data <- lapply(1:length(regions), function(i, x, n) {
+  x[[i]] %>% dplyr::mutate(Analysis=n[i])
+}, x=regions, n=names(regions))
+plot.data <- do.call(rbind, plot.data)
+
+loci <- do.call(rbind, regions) %>% 
+  dplyr::arrange(CHR, BP) %>% 
+  dplyr::select(CHR, BP) %>%
+  unique
+
+ggplot() +
+  geom_point(data=plot.data, aes(x=BP, y=-log10(P)), size=2) +
+  geom_vline(data=loci, aes(xintercept=BP), size=1, lty=2, color="firebrick1") +
+  facet_grid(rows=vars(Analysis), cols=vars(CHR)) +
+  theme_minimal(base_size=18) +
+  theme(
+    panel.grid=element_blank(),
+    panel.border=element_rect(fill="#FFFFFF00", color="black", size=0.25),
+    axis.line=element_line(size=0.25, color="black"),
+    axis.text.x=element_blank(),
+    strip.text.y=element_text(angle=0)
+  )
+ggsave(filename="~/Downloads/crazy.png", width=20, height=20)
+```

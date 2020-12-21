@@ -1,0 +1,141 @@
+---
+title: "Iterative WGCNA Setup"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(nnet)
+
+source("../utils/plot_theme.R")
+```
+
+```{r load_data}
+# Load clean gene expression data
+rosmap.cleaned <- readRDS("clean_data/1_rosmap_cleaning/rosmap_cleaned.RDS")
+
+# Load module information by Ben
+modules <- read.table("raw_data/Modules_March2018.txt", sep="\t", header=T)
+module.names <- unique(modules$Module)
+```
+
+Module-Level Iterative WGCNA Setup
+----------------------------------
+
+I generated `.tsv` files that can be used as inputs for the `iterativeWGNCA` program on the cluster. In this case, we wanted to try running `iterativeWGCNA` on every module that Ben created for each study.
+
+```{r}
+# Remove header information
+rosmap <- rosmap.cleaned[,-(1:21)]
+
+# Transpose matrices
+rosmap <- t(rosmap)
+
+# Add gene names as the first column
+rosmap <- cbind(rownames(rosmap), rosmap)
+
+# Add patients to the column names
+colnames(rosmap) <- c("Gene", rosmap.cleaned$Patient)
+
+# Read in module information
+for (module.index in 1:length(module.names)) {
+  
+  # Skip CBE from Mayo
+  if (length(grep("DLPFC", module.names[module.index])) == 0) {
+    next
+  }
+  # ROSMAP modules
+  # Extract genes and make sure ROSMAP transcripts exist
+  # Write tab-spaced input file for iterativeWGCNA
+  genes <- subset(modules, Module==module.names[module.index])$GeneID
+  genes <- intersect(rownames(rosmap), genes)
+  write.table(rosmap[as.character(genes),], file=paste0("clean_data/2_iterative_WGCNA_setup/", module.names[module.index], ".tsv"), row.names=F, col.names=T, sep="\t", quote=F)
+}
+```
+
+Cohort-Level Iterative WGCNA Setup
+----------------------------------
+
+In this case, I generate files required to run `iterativeWGCNA` on each cohort. This involves ignoring Ben's modules and generating our own.
+
+```{r}
+write.table(rosmap, file="clean_data/2_iterative_WGCNA_setup/iterativeWGCNA.tsv", row.names=F, col.names=T, sep="\t", quote=F)
+
+```
+
+Summary - Next Steps
+--------------------
+
+The following three scripts were run on Helix in order to generate output. The scripts might need slight tweaking since the project directory structure has changed since the last time these were run. The first script is for cohort-level iterativeWGCNA and the second script is for module-level iterativeWGCNA. They both call the third script to run individual instances.
+
+```{bash}
+# Run iterativeWGCNA for Mayo
+mkdir ../results/1_cleaning/mayo/cohort/
+qsub -F "../../../../clean_data/1_cleaning/mayo_iterativeWGCNA.tsv ../results/1_cleaning/mayo/cohort/" 1d_iterative_WGCNA_module_individual.sh
+
+# Run iterativeWGCNA for Mayo
+mkdir ../results/1_cleaning/mssm/cohort/
+qsub -F "../../../../clean_data/1_cleaning/mssm_iterativeWGCNA.tsv ../results/1_cleaning/mssm/cohort/" 1d_iterative_WGCNA_module_individual.sh
+
+# Run iterativeWGCNA for Mayo
+mkdir ../results/1_cleaning/rosmap/cohort/
+qsub -F "../../../../clean_data/1_cleaning/rosmap_iterativeWGCNA.tsv ../results/1_cleaning/rosmap/cohort/" 1d_iterative_WGCNA_module_individual.sh
+```
+
+```{bash}
+# Iterate through all module files in Mayo
+for filename in ../clean_data/1_cleaning/iterativeWGCNA_mayo/*.tsv; do
+  
+  # Create directory to store results
+  mkdir ../results/1_cleaning/mayo/${filename##*/}
+  
+  # Run iterativeWGCNA
+  qsub -F "../../../../clean_data/1_cleaning/iterativeWGCNA_mayo/${filename##*/} ../clean_data/1_cleaning/mayo/${filename##*/}" 1d_iterative_WGCNA_module_individual.sh
+  
+done
+
+# Iterate through all module files in MSSM
+for filename in ../clean_data/1_cleaning/iterativeWGCNA_mssm/*.tsv; do
+  
+  # Create directory to store results
+  mkdir ../results/1_cleaning/mssm/${filename##*/}
+  
+  # Run iterativeWGCNA
+  qsub -F "../../../../clean_data/1_cleaning/iterativeWGCNA_mssm/${filename##*/} ../clean_data/1_cleaning/mssm/${filename##*/}" 1d_iterative_WGCNA_module_individual.sh
+  
+done
+
+# Iterate through all module files in ROSMAP
+for filename in ../clean_data/1_cleaning/iterativeWGCNA_rosmap/*.tsv; do
+  
+  # Create directory to store results
+  mkdir ../results/1_cleaning/rosmap/${filename##*/}
+  
+  # Run iterativeWGCNA
+  qsub -F "../../../../clean_data/1_cleaning/iterativeWGCNA_rosmap/${filename##*/} ../clean_data/1_cleaning/rosmap/${filename##*/}" 1d_iterative_WGCNA_module_individual.sh
+  
+done
+```
+
+```{bash}
+#PBS -l nodes=1:ppn=1,walltime=48:00:00
+#PBS -q batch
+
+# Change to the working directory of the script
+cd $PBS_O_WORKDIR
+
+# Load modules for iterativeWGCNA
+module load R/3.5.1
+module load python/3.6.5
+
+# Run iterativeWGCNA
+iterativeWGCNA -i $1 -o $2 --verbose --wgcnaParameters power=6,minKMEtoStay=0.6,minCoreKME=0.6,minCoreKMESize=100
+```
+
+
+

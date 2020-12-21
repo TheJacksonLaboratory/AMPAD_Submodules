@@ -1,0 +1,329 @@
+---
+title: "Supplementary Tables"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(GenomicRanges)
+library(SNPlocs.Hsapiens.dbSNP144.GRCh37)
+```
+
+```{r load_data}
+mayo <- readRDS("../mayo_pipeline/clean_data/1_mayo_cleaning/mayo_cleaned.RDS")
+mssm <- readRDS("../mssm_pipeline/clean_data/1_mssm_cleaning/mssm_cleaned.RDS")
+rosmap <- readRDS("../rosmap_pipeline/clean_data/1_rosmap_cleaning/rosmap_cleaned.RDS")
+
+modules <- read.table("../raw_data/Modules_March2018.txt", sep="\t", header=T)
+submodules.mayo <- readRDS("../mayo_pipeline/clean_data/3_iterative_WGCNA_cleaning/mayo_submodule_sig_genes.RDS")
+submodules.mssm <- readRDS("../mssm_pipeline/clean_data/3_iterative_WGCNA_cleaning/mssm_submodule_sig_genes.RDS")
+submodules.rosmap <- readRDS("../rosmap_pipeline/clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_sig_genes.RDS")
+
+mayo.subtypes <- readRDS("../mayo_pipeline/clean_data/4_stratification/mayo_subtypes_map.RDS")
+mssm.phg.subtypes <- readRDS("../mssm_pipeline/clean_data/4_stratification/mssm_subtypes_map.RDS")
+mssm.fp.subtypes <- readRDS("../mssm_fp_pipeline/clean_data/4_stratification/mssm_subtypes_map.RDS")
+rosmap.subtypes <- readRDS("../rosmap_pipeline/clean_data/4_stratification/rosmap_subtypes_map.RDS")
+
+mayo.annots <- readRDS("../mayo_pipeline/clean_data/6_submodule_annotation/mayo_submodule_annots.RDS")
+mssm.annots <- readRDS("../mssm_pipeline/clean_data/6_submodule_annotation/mssm_submodule_annots.RDS")
+rosmap.annots <- readRDS("../rosmap_pipeline/clean_data/6_submodule_annotation/rosmap_submodule_annots.RDS")
+
+rosmap.sig <- readRDS("clean_data/0_comparative/rosmap.sig.RDS")
+mssm.sig <- readRDS("clean_data/0_comparative/mssm.sig.RDS")
+mssm.fp.sig <- readRDS("clean_data/0_comparative/mssm.fp.sig.RDS")
+mayo.sig <- readRDS("clean_data/0_comparative/mayo.sig.RDS")
+```
+
+Summary of Cohorts
+------------------
+
+This table will include total number of patients by brain region in each cohort.
+
+```{r}
+tbl <- data.frame(
+  Cohort=c("Mayo", "MSBB", "MSBB", "MSBB", "MSBB", "ROSMAP"),
+  Tissue=c("TCX", "FP", "IFG", "PHG", "STG", "DLPFC"),
+  Patients=c(
+    nrow(mayo),
+    length(grep("FP", mssm$Tissue.Diagnosis)),
+    length(grep("IFG", mssm$Tissue.Diagnosis)),
+    length(grep("PHG", mssm$Tissue.Diagnosis)),
+    length(grep("STG", mssm$Tissue.Diagnosis)),
+    nrow(rosmap)
+  )
+)
+head(tbl)
+
+write.csv(tbl, "results/2_supplementary_tables/cohort_summaries.csv", row.names=F)
+```
+
+
+Summary of Cohorts by Sex and Diagnosis
+---------------------------------------
+
+I am creating a very basic summary of cohorts by including frequency of patients by sex and diagnosis. I do this for all tissue types other than CBE, which was never included in any of the analysis. 
+
+```{r}
+# TCX
+mayo$Tissue.Diagnosis <- factor(as.character(mayo$Tissue.Diagnosis), levels=c("TCX.AD", "TCX.OTHER", "TCX.CONTROL"))
+mayo$Sex=plyr::revalue(mayo$Sex, c("FEMALE"="F", "MALE"="M"))
+tcx <- table(mayo$Sex, mayo$Tissue.Diagnosis)
+tcx <- melt(tcx) %>% dplyr::select(Sex=1, Diagnosis=2, Patients=3) %>% dplyr::mutate(Brain.Region="TCX", Cohort="Mayo")
+
+# FP
+tissue.diagnosis <- factor(as.character(mssm$Tissue.Diagnosis[grepl("FP", mssm$Tissue.Diagnosis)]), levels=c("FP.AD", "FP.OTHER", "FP.CONTROL"))
+fp <- table(mssm$Sex[grepl("FP", mssm$Tissue.Diagnosis)], tissue.diagnosis)
+fp <- melt(fp) %>% dplyr::select(Sex=1, Diagnosis=2, Patients=3) %>% dplyr::mutate(Brain.Region="FP", Cohort="MSBB")
+
+# IFG
+tissue.diagnosis <- factor(as.character(mssm$Tissue.Diagnosis[grepl("IFG", mssm$Tissue.Diagnosis)]), levels=c("IFG.AD", "IFG.OTHER", "IFG.CONTROL"))
+ifg <- table(mssm$Sex[grepl("IFG", mssm$Tissue.Diagnosis)], tissue.diagnosis)
+ifg <- melt(ifg) %>% dplyr::select(Sex=1, Diagnosis=2, Patients=3) %>% dplyr::mutate(Brain.Region="IFG", Cohort="MSBB")
+
+# PHG
+tissue.diagnosis <- factor(as.character(mssm$Tissue.Diagnosis[grepl("PHG", mssm$Tissue.Diagnosis)]), levels=c("PHG.AD", "PHG.OTHER", "PHG.CONTROL"))
+phg <- table(mssm$Sex[grepl("PHG", mssm$Tissue.Diagnosis)], tissue.diagnosis)
+phg <- melt(phg) %>% dplyr::select(Sex=1, Diagnosis=2, Patients=3) %>% dplyr::mutate(Brain.Region="PHG", Cohort="MSBB")
+
+# STG
+tissue.diagnosis <- factor(as.character(mssm$Tissue.Diagnosis[grepl("STG", mssm$Tissue.Diagnosis)]), levels=c("STG.AD", "STG.OTHER", "STG.CONTROL"))
+stg <- table(mssm$Sex[grepl("STG", mssm$Tissue.Diagnosis)], tissue.diagnosis)
+stg <- melt(stg) %>% dplyr::select(Sex=1, Diagnosis=2, Patients=3) %>% dplyr::mutate(Brain.Region="STG", Cohort="MSBB")
+
+# DLPFC
+tissue.diagnosis <- factor(paste0("DLPFC.", as.character(rosmap$Source.Diagnosis)), levels=c("DLPFC.AD", "DLPFC.OTHER", "DLPFC.CONTROL"))
+dlpfc <- table(c("F", "M")[rosmap$Sex], tissue.diagnosis)
+dlpfc <- melt(dlpfc) %>% dplyr::select(Sex=1, Diagnosis=2, Patients=3) %>% dplyr::mutate(Brain.Region="DLPFC", Cohort="ROSMAP")
+
+tbl <- rbind(tcx, fp, ifg, phg, stg, dlpfc) %>%
+  dplyr::select(Cohort, Brain.Region, Diagnosis, Sex, Patients)
+head(tbl)
+
+write.csv(tbl, "results/2_supplementary_tables/cohort_summaries_by_sex_and_diagnosis.csv", row.names=F)
+```
+
+Module Summary
+--------------
+
+I mention the names of each module and the number of genes in them. 
+
+```{r}
+cohorts <- c("Mayo", "MSBB", "MSBB", "MSBB", "MSBB", "ROSMAP")
+brain.regions <- c("TCX", "FP", "IFG", "PHG", "STG", "DLPFC")
+
+tbl <- do.call(rbind, lapply(1:length(brain.regions), function(i) {
+  modules %>% 
+    dplyr::filter(grepl(brain.regions[i], Module)) %>%
+    dplyr::group_by(Module) %>%
+    dplyr::summarise(Genes=n()) %>% 
+    dplyr::arrange(desc(Genes)) %>%
+    dplyr::mutate(Brain.Region=brain.regions[i], Cohort=cohorts[i])
+})) %>% dplyr::select(Cohort, Brain.Region, Module, Genes)
+head(tbl) 
+
+write.csv(tbl, "results/2_supplementary_tables/module_summaries.csv", row.names=F)
+```
+
+Submodule Summary
+-----------------
+
+I mention the names of each submodule, module of origin, and the number of genes in them.
+
+```{r}
+submodules <- rbind(submodules.mayo, submodules.mssm, submodules.rosmap)
+
+tbl <- do.call(rbind, lapply(1:length(brain.regions), function(i) {
+  submodules %>% 
+    dplyr::filter(grepl(brain.regions[i], Submodule)) %>%
+    dplyr::group_by(Submodule) %>%
+    dplyr::summarise(Genes=n()) %>%
+    dplyr::mutate(Module=sapply(strsplit(Submodule, "_"), function(x) x[1])) %>%
+    dplyr::arrange(Module, desc(Genes)) %>%
+    dplyr::mutate(Brain.Region=brain.regions[i], Cohort=cohorts[i])
+})) %>% dplyr::select(Cohort, Brain.Region, Module, Submodule, Genes)
+head(tbl) 
+
+write.csv(tbl, "results/2_supplementary_tables/submodule_summaries.csv", row.names=F)
+```
+
+Patient Subtype Summary
+-----------------------
+
+A simple table where I mention the number of subtypes for each brain region and the number of patients in each.
+
+```{r}
+tbl <- rbind(
+  table(mayo.subtypes$Subtype) %>% melt %>% 
+    dplyr::select(Subtype=1, Patients=2) %>% 
+    dplyr::mutate(Cohort="Mayo", Brain.Region="TCX"),
+  table(mssm.fp.subtypes$Subtype) %>% melt %>%
+    dplyr::select(Subtype=1, Patients=2) %>%
+    dplyr::mutate(Cohort="MSBB", Brain.Region="FP"),
+  table(mssm.phg.subtypes$Subtype) %>% melt %>%
+    dplyr::select(Subtype=1, Patients=2) %>%
+    dplyr::mutate(Cohort="MSBB", Brain.Region="PHG"),
+  table(rosmap.subtypes$Subtype) %>% melt %>%
+    dplyr::select(Subtype=1, Patients=2) %>%
+    dplyr::mutate(Cohort="ROSMAP", Brain.Region="DLPFC")
+) %>% dplyr::select(Cohort, Brain.Region, Subtype, Patients)
+head(tbl)
+
+write.csv(tbl, "results/2_supplementary_tables/subtype_summaries.csv", row.names=F)
+```
+
+Submodule Annotations
+---------------------
+
+Use annotations developed in all three cohorts to generate a large annotation table.
+
+```{r}
+kegg.annots <- rbind(
+  do.call(rbind, lapply(names(mayo.annots), function(x) {
+    mayo.annots[[x]][["KEGG"]] %>% 
+      dplyr::mutate(Submodule=x) %>%
+      dplyr::select(Submodule, everything())
+  })),
+  do.call(rbind, lapply(names(mssm.annots), function(x) {
+    mssm.annots[[x]][["KEGG"]] %>% 
+      dplyr::mutate(Submodule=x) %>%
+      dplyr::select(Submodule, everything())
+  })),
+  do.call(rbind, lapply(names(rosmap.annots), function(x) {
+    rosmap.annots[[x]][["KEGG"]] %>% 
+      dplyr::mutate(Submodule=x) %>%
+      dplyr::select(Submodule, everything())
+  }))
+)
+head(kegg.annots)
+
+write.csv(kegg.annots, "results/2_supplementary_tables/submodule_kegg_annotations.csv", row.names=F)
+```
+
+```{r}
+go.annots <- rbind(
+  do.call(rbind, lapply(names(mayo.annots), function(x) {
+    mayo.annots[[x]][["GO"]] %>% 
+      dplyr::mutate(Submodule=x) %>%
+      dplyr::select(Submodule, everything())
+  })),
+  do.call(rbind, lapply(names(mssm.annots), function(x) {
+    mssm.annots[[x]][["GO"]] %>% 
+      dplyr::mutate(Submodule=x) %>%
+      dplyr::select(Submodule, everything())
+  })),
+  do.call(rbind, lapply(names(rosmap.annots), function(x) {
+    rosmap.annots[[x]][["GO"]] %>% 
+      dplyr::mutate(Submodule=x) %>%
+      dplyr::select(Submodule, everything())
+  }))
+)
+head(go.annots)
+
+write.csv(go.annots, "results/2_supplementary_tables/submodule_go_annotations.csv", row.names=F)
+```
+
+```{r}
+react.annots <- rbind(
+  do.call(rbind, lapply(names(mayo.annots), function(x) {
+    mayo.annots[[x]][["Reactome"]] %>% 
+      dplyr::mutate(Submodule=x) %>%
+      dplyr::select(Submodule, everything())
+  })),
+  do.call(rbind, lapply(names(mssm.annots), function(x) {
+    mssm.annots[[x]][["Reactome"]] %>% 
+      dplyr::mutate(Submodule=x) %>%
+      dplyr::select(Submodule, everything())
+  })),
+  do.call(rbind, lapply(names(rosmap.annots), function(x) {
+    rosmap.annots[[x]][["Reactome"]] %>% 
+      dplyr::mutate(Submodule=x) %>%
+      dplyr::select(Submodule, everything())
+  }))
+)
+head(react.annots)
+
+write.csv(react.annots, "results/2_supplementary_tables/submodule_reactome_annotations.csv", row.names=F)
+```
+
+Table of Significant SNPs
+-------------------------
+
+Here, I create a simple table of SNPs by analysis for each of the regions tested (DLPFC, PHG, FP, TCX).
+
+```{r}
+mayo.sig.snps <- Reduce(union, lapply(mayo.sig, function(x) x$SNP[which(x$P < 1e-05)])[-(1:3)])
+mssm.sig.snps <- Reduce(union, lapply(mssm.sig, function(x) x$SNP[which(x$P < 1e-05)])[-(1:2)])
+mssm.fp.sig.snps <- Reduce(union, lapply(mssm.fp.sig, function(x) x$SNP[which(x$P < 1e-05)])[-(1:2)])
+rosmap.sig.snps <- Reduce(union, lapply(rosmap.sig, function(x) x$SNP[which(x$P < 1e-05)])[-(1:2)])
+
+mayo.sig.tbl <- do.call(rbind, lapply(1:length(mayo.sig), function(i, x, n) {
+  x[[i]] %>% 
+    dplyr::mutate(Analysis=n[i]) %>%
+    dplyr::filter(P < 1e-05) %>%
+    dplyr::select(Analysis, SNP, P)
+}, x=mayo.sig, n=names(mayo.sig)))
+
+mssm.sig.tbl <- do.call(rbind, lapply(1:length(mssm.sig), function(i, x, n) {
+  x[[i]] %>%
+    dplyr::mutate(Analysis=n[i]) %>%
+    dplyr::filter(P < 1e-05) %>%
+    dplyr::select(Analysis, SNP, P)
+}, x=mssm.sig, n=names(mssm.sig)))
+
+mssm.fp.sig.tbl <- do.call(rbind, lapply(1:length(mssm.fp.sig), function(i, x, n) {
+  x[[i]] %>%
+    dplyr::mutate(Analysis=n[i]) %>%
+    dplyr::filter(P < 1e-05) %>%
+    dplyr::select(Analysis, SNP, P)
+}, x=mssm.fp.sig, n=names(mssm.fp.sig)))
+
+rosmap.sig.tbl <- do.call(rbind, lapply(1:length(rosmap.sig), function(i, x, n) {
+  x[[i]] %>%
+    dplyr::mutate(Analysis=n[i]) %>%
+    dplyr::filter(P < 1e-05) %>%
+    dplyr::select(Analysis, SNP, P)
+}, x=rosmap.sig, n=names(rosmap.sig)))
+
+ref.snps <- snpsByOverlaps(
+  SNPlocs.Hsapiens.dbSNP144.GRCh37, rbind(mayo.sig.tbl, mssm.sig.tbl, mssm.fp.sig.tbl, rosmap.sig.tbl) %>%
+    dplyr::mutate(CHR=sapply(strsplit(SNP, ":"), function(x) x[1])) %>%
+    dplyr::mutate(BP.Start=as.numeric(sapply(strsplit(SNP, ":"), function(x) x[2]))) %>%
+    dplyr::mutate(BP.End=as.numeric(BP.Start+1)) %>%
+    dplyr::select(CHR, BP.Start, BP.End) %>%
+    makeGRangesFromDataFrame() %>% GPos()
+) %>% as.data.frame() %>%
+  dplyr::mutate(SNP=paste0(seqnames, ":", pos))
+
+mayo.sig.tbl <- merge(mayo.sig.tbl, ref.snps, all.x=T) %>% 
+  dplyr::select(Analysis, RefSNP=RefSNP_id, SNP, P) %>%
+  dplyr::arrange(Analysis)
+mayo.sig.tbl <- mayo.sig.tbl[!duplicated(paste0(mayo.sig.tbl$Analysis, ":", mayo.sig.tbl$SNP)),]
+
+mssm.sig.tbl <- merge(mssm.sig.tbl, ref.snps, all.x=T) %>% 
+  dplyr::select(Analysis, RefSNP=RefSNP_id, SNP, P) %>%
+  dplyr::arrange(Analysis)
+mssm.sig.tbl <- mssm.sig.tbl[!duplicated(paste0(mssm.sig.tbl$Analysis, ":", mssm.sig.tbl$SNP)),]
+
+mssm.fp.sig.tbl <- merge(mssm.fp.sig.tbl, ref.snps, all.x=T) %>% 
+  dplyr::select(Analysis, RefSNP=RefSNP_id, SNP, P) %>%
+  dplyr::arrange(Analysis)
+mssm.fp.sig.tbl <- mssm.fp.sig.tbl[!duplicated(paste0(mssm.fp.sig.tbl$Analysis, ":", mssm.fp.sig.tbl$SNP)),]
+
+rosmap.sig.tbl <- merge(rosmap.sig.tbl, ref.snps, all.x=T) %>% 
+  dplyr::select(Analysis, RefSNP=RefSNP_id, SNP, P) %>%
+  dplyr::arrange(Analysis)
+rosmap.sig.tbl <- rosmap.sig.tbl[!duplicated(paste0(rosmap.sig.tbl$Analysis, ":", rosmap.sig.tbl$SNP)),]
+
+write.csv(mayo.sig.tbl, "results/2_supplementary_tables/tcx_significant_snps.csv", row.names=F)
+write.csv(mssm.sig.tbl, "results/2_supplementary_tables/phg_significant_snps.csv", row.names=F)
+write.csv(mssm.fp.sig.tbl, "results/2_supplementary_tables/fp_significant_snps.csv", row.names=F)
+write.csv(rosmap.sig.tbl, "results/2_supplementary_tables/dlpfc_significant_snps.csv", row.names=F)
+```
+

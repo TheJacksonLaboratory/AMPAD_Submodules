@@ -1,0 +1,41 @@
+---
+title: "Merge GWAS Variant Calls"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(ggplot2)
+library(dplyr)
+```
+
+```{r load_data}
+files <- list.files(path="clean_data/5_gwas/5a_cleaning/", pattern="\\.ps.sig$")
+```
+
+Variant Calls for GWAS
+----------------------
+
+I am merging multiple different data sources into one file. I am using the Variant Effect Predictor by Ensembl to predict the effect of variants that are significantly associated with any of the tested phenotypes. I also called genes close to significant variants automatically.
+
+```{r}
+# Produce results for each cohort
+for (file.index in 1:length(files)) {
+  
+  # Store sample name
+  sample.name <- strsplit(files[file.index], "\\.")[[1]][1]
+  
+  # Load suggestive SNPs results from VEP
+  vep.results <- read.csv(paste0("clean_data/5_gwas/5c_gwas_vep/", sample.name, "_VEP.csv"))
+  suggestive <- read.csv(paste0("clean_data/5_gwas/5b_gwas_setup/", sample.name, "_suggestive_SNPs.csv"))
+
+  # Merge data
+  merged <- merge(suggestive, vep.results, by="RefSNP.ID", all.x=T, all.y=T)
+  
+  # Write results
+  write.csv(merged, file=paste0("clean_data/5_gwas/5d_gwas_variants/", sample.name, ".csv"), row.names=F, quote=T)
+}
+```

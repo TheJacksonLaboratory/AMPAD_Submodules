@@ -1,0 +1,106 @@
+---
+title: "SNP eQTL Overlap"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+library(data.table)
+
+source("../utils/plot_theme.R")
+```
+
+```{r load_data}
+# Load association matrix (p-values)
+assoc.mtx <- fread("clean_data/11_genetic_arch/assoc_mtx.csv", sep=",", header=T)
+setkey(assoc.mtx, SNP)
+
+analyses <- colnames(assoc.mtx)[-1]
+
+assoc.mtx[["CHR"]] <- as.numeric(sapply(strsplit(assoc.mtx[["SNP"]], ":"), function(x) x[1]))
+assoc.mtx[["BP"]] <- as.numeric(sapply(strsplit(assoc.mtx[["SNP"]], ":"), function(x) x[2]))
+
+# Load cis-eQTLS
+eqtls <- fread("raw_data/DLPFC_ROSMAP_cis_eQTL_release_Filtered_FDR_P05_with_header.csv", sep=",", header=T)
+eqtls[["SNP"]] <- paste0(eqtls[["chromosome"]], ":", eqtls[["snpLocation"]])
+setkey(eqtls, SNP)
+
+# Generate merged data table
+eqtl.merge <- merge(assoc.mtx, eqtls)
+
+# Submodule genes
+submodules <- readRDS("~/Desktop/AMPAD_Submodules/rosmap_pipeline/clean_data/3_iterative_WGCNA_cleaning/rosmap_submodule_sig_genes.RDS")
+```
+
+I calculate the proportion of suggestive variants that are also eQTLs in the DLPFC region. I do this for each analysis that was run.
+
+```{r}
+freqs <- do.call(rbind, lapply(analyses, function(x) {
+  sgs <- eqtl.merge[eqtl.merge[[x]] < 1e-05,] # Suggestive variants that are eQTL 
+  sgs.all <- assoc.mtx[assoc.mtx[[x]] < 1e-05,] # Suggestive variants
+  return(c(length(unique(sgs$SNP)), length(unique(sgs.all$SNP))))
+}))
+# Add total frequency
+gen.prop <- length(unique(eqtl.merge$SNP)) / length(unique(assoc.mtx$SNP))
+freqs.prop <- freqs[,1] / freqs[,2]
+names(freqs.prop) <- analyses
+
+plot.data <- data.frame(
+  Analysis=factor(names(freqs.prop), levels=names(freqs.prop)),
+  Proportion=freqs.prop,
+  N=freqs[,2],
+  Analysis.Type=c(rep("Case-Control", 2), rep("Subtype", 2), rep("Module", 4), rep("Submodule", 11))
+)
+plot.data$CI.Delta = 1.96 * sqrt((plot.data$Proportion * (1 - plot.data$Proportion)) / plot.data$N)
+plot.data$CI.Max = sapply(plot.data$Proportion + plot.data$CI.Delta, function(x) min(x, 1))
+plot.data$CI.Min = sapply(plot.data$Proportion - plot.data$CI.Delta, function(x) max(x, 0))
+ggplot(plot.data) +
+  geom_bar(aes(x=Analysis, y=Proportion, fill=Analysis.Type), color="black", stat="identity") +
+  geom_errorbar(aes(x=Analysis, ymin=CI.Min, ymax=CI.Max), width=0.2) + 
+  geom_hline(yintercept=gen.prop, lty=2, color="firebrick1") +
+  ylim(0, 1) +
+  labs(x="", y="Proportion of SNPs that are cis-eQTLs", fill="Analysis Type") +
+  basic_theme_big +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1))
+ggsave(filename="results/12_SNP_eQTL_overlap/suggestive.SNPs.eQTL.proportion.png", width=8, height=8)
+ggplot(plot.data) +
+  geom_bar(aes(x=Analysis, y=Proportion, fill=Analysis.Type), color="black", stat="identity") +
+  geom_text(aes(x=Analysis, y=Proportion, label=round(Proportion, 2)), vjust=-0.5) +
+  geom_hline(yintercept=gen.prop, lty=2, color="firebrick1") +
+  ylim(0, 1) +
+  labs(x="", y="Proportion of SNPs that are cis-eQTLs", fill="Analysis Type") +
+  basic_theme_big +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1))
+```
+
+I assessed how many eQTLs per gene exist for each submodule. I was interested to see if the gene content of certain submodules had a larger proportion of genetic modifers.
+
+```{r}
+var.nums <- do.call(rbind, lapply(unique(submodules$Submodule), function(x) {
+  sgs <- eqtl.merge[eqtl.merge[[x]] < 1e-05,] # Suggestive variants that are eQTL
+  genes <- as.character(dplyr::filter(submodules, Submodule==x)$Gene)
+  num.eqtl <- subset(eqtl.merge, gene %in% genes) # Variants that are eQTL for genes in the submodule
+  return(c(length(unique(sgs$SNP)), length(unique(num.eqtl$SNP)), length(genes)))
+}))
+
+plot.data <- data.frame(
+  Analysis = unique(submodules$Submodule),
+  Module = sapply(strsplit(as.character(unique(submodules$Submodule)), "_"), function(x) x[1]),
+  Submodule.eQTLs = var.nums[,2],
+  Suggestive.eQTLS = var.nums[,1],
+  N=var.nums[,3]
+)
+
+ggplot(plot.data) + 
+  geom_point(aes(x=Submodule.eQTLs, y=Suggestive.eQTLS, color=Module, size=N)) +
+  scale_color_manual(values=c("dodgerblue3", "chocolate4", "cadetblue2", "darkgoldenrod1")) +
+  labs(x="Number of SNPs that are eQTLs for Submodule Genes", y="Number of SNPs that are Associated with Submodule and eQTL", size="Submodule Size", color="Module of Origin") +
+  basic_theme_big
+ggsave(filename="results/12_SNP_eQTL_overlap/eQTLs.by.SNP.classification.png", width=8, height=8)
+```
+

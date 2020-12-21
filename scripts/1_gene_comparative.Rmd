@@ -1,0 +1,144 @@
+---
+title: "Significant Gene Comparison Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+
+source("../utils/plot_theme.R")
+```
+
+```{r load_data}
+rosmap.snps <- readRDS("clean_data/0_comparative/rosmap.snps.min.RDS")
+rosmap.snps <- rosmap.snps %>%
+  dplyr::mutate(CHR=as.numeric(sapply(strsplit(SNP, ":"), function(x) x[1]))) %>%
+  dplyr::mutate(BP=as.numeric(sapply(strsplit(SNP, ":"), function(x) x[2])))
+
+mssm.snps <- readRDS("clean_data/0_comparative/mssm.snps.min.RDS")
+mssm.snps <- mssm.snps %>%
+  dplyr::mutate(CHR=as.numeric(sapply(strsplit(SNP, ":"), function(x) x[1]))) %>%
+  dplyr::mutate(BP=as.numeric(sapply(strsplit(SNP, ":"), function(x) x[2])))
+
+mssm.fp.snps <- readRDS("clean_data/0_comparative/mssm.fp.snps.min.RDS")
+mssm.fp.snps <- mssm.fp.snps %>%
+  dplyr::mutate(CHR=as.numeric(sapply(strsplit(SNP, ":"), function(x) x[1]))) %>%
+  dplyr::mutate(BP=as.numeric(sapply(strsplit(SNP, ":"), function(x) x[2])))
+
+mayo.snps <- readRDS("clean_data/0_comparative/mayo.snps.min.RDS")
+mayo.snps <- mayo.snps %>%
+  dplyr::mutate(CHR=as.numeric(sapply(strsplit(SNP, ":"), function(x) x[1]))) %>%
+  dplyr::mutate(BP=as.numeric(sapply(strsplit(SNP, ":"), function(x) x[2])))
+```
+
+Generate Regions
+----------------
+
+To split the SNPs into peaks, I use a rank-based sliding window method. I used a relatively arbitrary cutoff (delta-change > 1e+05) between base pairs as the region cutoff. 
+
+```{r}
+D.CHANGE = 1e+05
+# Take a matrix with BP and Rank as columns
+# BP and rank must be in ascending order
+rank.window.cut <- function(x) {
+  dBP = x$BP[2:nrow(x)] - x$BP[1:(nrow(x)-1)]
+  cutoffs = x[1:(nrow(x)-1),"BP"] + (dBP / 2)
+  return(cutoffs[dBP > D.CHANGE])
+}
+
+# Iterate over all 22 chromosomes
+chr.region.snps <- lapply(1:22, function(i) {
+  if (!(i %in% rosmap.snps$CHR)) {
+    # No SNPs on chromosome
+    return(data.frame())
+  }
+  
+  plot.data <- rosmap.snps %>% dplyr::filter(CHR == i) %>%
+    dplyr::select(SNP, BP) %>% dplyr::arrange(BP) %>% dplyr::mutate(Rank=1:n())
+  
+  print(
+    ggplot(data=plot.data) +
+      geom_point(aes(x=Rank, y=BP), size=I(1)) +
+      geom_line(aes(x=Rank, y=BP), size=I(0.5)) + 
+      geom_hline(yintercept=rank.window.cut(plot.data), lty=2, size=I(0.25), color="firebrick1") + 
+      basic_theme_big
+  )
+  
+  snps <- rosmap.snps %>% dplyr::filter(CHR == i)
+  cuts <- rank.window.cut(plot.data)
+  lower.bounds <- c(0, cuts)
+  upper.bounds <- c(cuts, Inf)
+  
+  regions <- lapply(1:length(lower.bounds), function(k) snps[snps$BP >= lower.bounds[k] & snps$BP < upper.bounds[k],])
+  regions <- do.call(rbind, lapply(regions, function(x) x[(which(x$P.ROSMAP == min(x$P.ROSMAP)))[1],]))
+  rownames(regions) <- NULL
+  return(regions)
+})
+chr.region.snps <- do.call(rbind, chr.region.snps)
+```
+
+Overlap Peaks with Other Cohorts
+--------------------------------
+
+I took the most significant SNP from each peak and checked if it was replicated in any of the other cohorts of interest.
+
+```{r}
+replicates.1 <- merge(mssm.snps, chr.region.snps, by="SNP") %>%
+  dplyr::select(SNP, CHR=CHR.x, BP=BP.x, Source=Source.ROSMAP, P=P.ROSMAP, Replicate=Source.MSSM, P.Replicate=P.MSSM) %>%
+  dplyr::mutate(Replication.Cohort="MSSM PHG")
+
+replicates.2 <- merge(mssm.fp.snps, chr.region.snps, by="SNP") %>%
+  dplyr::select(SNP, CHR=CHR.x, BP=BP.x, Source=Source.ROSMAP, P=P.ROSMAP, Replicate=Source.MSSM.FP, P.Replicate=P.MSSM.FP) %>%
+  dplyr::mutate(Replication.Cohort="MSSM FP")
+
+replicates.3 <- merge(mayo.snps, chr.region.snps, by="SNP") %>%
+  dplyr::select(SNP, CHR=CHR.x, BP=BP.x, Source=Source.ROSMAP, P=P.ROSMAP, Replicate=Source.MAYO, P.Replicate=P.MAYO) %>%
+  dplyr::mutate(Replication.Cohort="MAYO")
+
+replicates <- do.call(rbind, list(replicates.1, replicates.2, replicates.3))
+replicates <- replicates %>%
+  dplyr::arrange(CHR, P, BP)
+
+head(replicates)
+```
+
+Annotating SNPs
+---------------
+
+I used the Variant Effect Predictor by Ensembl previously to annotate SNPs. I use this to quickly annotate the SNPs that are found to be replicated across cohorts.
+
+```{r}
+vep.files <- list.files("../rosmap_pipeline/clean_data/5_gwas/5e_gwas_lookup/", pattern="*.csv")
+vep.files <- vep.files[!grepl("_Case", vep.files)]
+names(vep.files) <- sapply(strsplit(vep.files, "\\."), function(x) x[1])
+
+# Load VEPs from previously generated files in ROSMAP
+veps <- do.call(rbind, lapply(1:length(vep.files), function(i, x, n) {
+  read.csv(paste0("../rosmap_pipeline/clean_data/5_gwas/5e_gwas_lookup/", x[i]), header=T) %>% 
+    dplyr::mutate(Analysis=n[i])
+}, x=vep.files, n=names(vep.files)))
+
+# Create an annotation map from the VEPs
+annot.map <- do.call(rbind, apply(replicates %>% dplyr::select(SNP, CHR, BP, Source) %>% unique, 1, function(x) {
+  tbl <- veps %>% dplyr::filter(SNP==x[1], Analysis==x[4]) %>%
+    dplyr::select(
+      SNP, RefSNP.ID,
+      Gene.Symbol=Gene.Symbol, Closest.Reported.SNPs=Reported.Genes, Closest.Mapped.SNPs=Mapped.Genes
+    ) %>%
+    unique
+}))
+
+# Annotate replicates
+replicates <- merge(replicates, annot.map, by="SNP", all.x=T) %>%
+  dplyr::mutate(CHR=as.numeric(CHR), BP=as.numeric(BP)) %>%
+  dplyr::arrange(P, CHR, BP)
+head(replicates)
+
+write.csv(replicates, "results/1_gene_comparative/replicated.SNPS.csv", row.names=F)
+```
+

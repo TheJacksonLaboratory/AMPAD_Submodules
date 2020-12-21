@@ -1,0 +1,137 @@
+---
+title: "Iterative WGCNA Cleaning"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+
+library(dplyr)
+library(ggplot2)
+
+source("../utils/plot_theme.R")
+source("../utils/helpers.R")
+```
+
+```{r load_data}
+# Get cleaned data for covariates
+cleaned <- readRDS("clean_data/1_mssm_cleaning/mssm_cleaned.RDS")
+
+# Get submodule labels to convert back into module labels
+modules <- read.table("raw_data/Modules_March2018.txt", sep="\t", header=T)
+module.names <- as.character(unique(modules$Module))
+module.names <- module.names[grep("FP|IFG|PHG|STG", module.names)]
+```
+
+I will read in specific files that were generated as output from `iterativeWGCNA`. This includes the final membership of genes (i.e. which submodule each gene belongs to after the iterative process) and eigengenes for each submodule. 
+
+I save the cleaned files I have generated from the output from `iterativeWGCNA`. These are similar to the submodule data sets that Cai generated after using SVD decomposition on Ben's modules.
+
+```{r}
+# Create data frame for analyzing breakdown
+breakdown <- list()
+
+gene.set <- list()
+eigengene.set <- list()
+submodule.labels <- list()
+for (i in 1:length(module.names)) {
+  
+  # Retrieve final membership of genes
+  final.membership <- read.table(file=paste0("results/2_iterative_WGCNA_setup/", module.names[i], ".tsv/final-membership.txt"), header=T, sep="\t")
+  
+  # Check if file exists
+  if (!file.exists(paste0("results/2_iterative_WGCNA_setup/", module.names[i], ".tsv/merged-0.05-eigengenes.txt"))) {
+    next
+  }
+  
+  # Retrieve eigengenes of submodules
+  eigengenes <- read.table(file=paste0("results/2_iterative_WGCNA_setup/", module.names[i], ".tsv/merged-0.05-eigengenes.txt"), header=T, row.names=1, sep="\t")
+  
+  # Get submodule names and remove unclassified
+  submodule.names <- unique(final.membership$Module) %>% as.character()
+  submodule.names <- intersect(rownames(eigengenes), submodule.names)
+  
+  # Calculate submodule sizes with UNCLASSIFIED included
+  submodule.sizes <- c()
+  for (j in 1:length(submodule.names)) {
+    submodule.sizes <- c(submodule.sizes, nrow(subset(final.membership, Module==submodule.names[j])))
+  }
+  submodule.names <- c(submodule.names[order(submodule.sizes, decreasing=T)], "UNCLASSIFIED")
+  
+  # Add information to breakdown
+  for (j in 1:length(submodule.names)) {
+    
+    breakdown[[length(breakdown)+1]] <- cbind(
+      Module=module.names[i],
+      Genes=nrow(subset(final.membership, Module==submodule.names[j])),
+      Submodule=ifelse(submodule.names[j]=="UNCLASSIFIED", "UNCLASSIFIED", j)
+    )
+  }
+  
+  # Remove UNCLASSIFIED information
+  submodule.names <- submodule.names[-grep("UNCLASSIFIED", submodule.names)]
+  
+  # Recalculate sizes without UNCLASSIFIED
+  #submodule.sizes <- c()
+  #for (j in 1:length(submodule.names)) {
+  #  submodule.sizes <- c(submodule.sizes, nrow(subset(final.membership, Module==submodule.names[j])))
+  #}
+  
+  # Create new submodule names
+  #submodule.names <- submodule.names[order(submodule.sizes, decreasing=T)]
+  submodule.names.col <- paste0(module.names[i], "_", 1:length(submodule.sizes))
+  
+  # Save genes
+  for (j in 1:length(submodule.names)) {
+    gene.set[[submodule.names.col[j]]] <- subset(final.membership, Module==submodule.names[j]) %>% 
+      dplyr::select(., Submodule=Module, Gene=Gene, Value=kME) 
+    gene.set[[submodule.names.col[j]]]$Submodule <- submodule.names.col[j]
+  }
+  
+  # Save eigengenes
+  for (j in 1:length(submodule.names)) {
+    eigengene.set[[submodule.names.col[j]]] <- t(eigengenes[submodule.names[j],])
+    colnames(eigengene.set[[submodule.names.col[j]]])[1] <- submodule.names.col[j]
+  }
+  
+  # Save submodule labels
+  submodule.labels <- append(submodule.labels, as.list(submodule.names.col))
+}
+
+# Create data frame to store significant genes from each submodule
+submodule.sig.genes <- do.call(rbind, gene.set)
+rownames(submodule.sig.genes) <- NULL
+
+# Create data frame to store eigengenes of cohort
+eigengenes <- data.frame(Patient=cleaned$Patient, Diagnosis=cleaned$Diagnosis, Source.Diagnosis=cleaned$Source.Diagnosis)
+eigengenes <- cbind(eigengenes, do.call(cbind, eigengene.set))
+eigengenes$Patient <- as.character(eigengenes$Patient)
+rownames(eigengenes) <- eigengenes$Patient
+
+saveRDS(eigengenes, file=paste0("clean_data/3_iterative_WGCNA_cleaning/mssm_eigengenes.RDS"))
+saveRDS(submodule.labels, file=paste0("clean_data/3_iterative_WGCNA_cleaning/mssm_submodule_labels.RDS"))
+saveRDS(submodule.sig.genes, file=paste0("clean_data/3_iterative_WGCNA_cleaning/mssm_submodule_sig_genes.RDS"))
+
+# Build data frame for breakdown graph
+breakdown <- do.call("rbind", breakdown) %>% as.data.frame()
+breakdown$Genes <- as.numeric(levels(breakdown$Genes))[breakdown$Genes]
+```
+
+I generated graphs to see how `iterativeWGCNA` decided to split Ben's modules. I ran the program on each module invidiually and every submodule has a mutually exclusive set of genes. If genes did not highly correlate in any given module, they were unclassified by the end of the `iterativeWGCNA` process and are not included in any submodule.
+
+```{r}
+# Analyze the breakdown of modules into submodules
+print(
+  ggplot(data=breakdown) + 
+    geom_bar(aes(x=Module, y=Genes, fill=Submodule, color=Submodule), stat="identity") +
+    scale_fill_hue(l=60, c=100) +
+    scale_color_hue(l=10, c=10) +
+    ggtitle("Breakdown of Modules into Submodules using Iterative WGCNA") +
+    basic_theme_big
+)
+ 
+ggsave(filename=paste0("results/3_iterative_WGCNA_cleaning/mssm_iterative_wgcna_breakdown.png"), width=6, height=5)
+```
+

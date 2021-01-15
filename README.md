@@ -16,7 +16,7 @@ Milind N, Preuss C, Haber A, Ananda G, Mukherjee S, John C, et al. (2020) Transc
 Environment
 -----------
 
-Scripts are written in either `R` or `Python`. I used `R` version 3.5.3 and `Python` version 3.7.3. Other important softwares used include:
+Scripts are written in either `R`(3.5.3) or `Python`(3.7.3). Other important softwares used include:
 
 1. `Inkscape` (0.92.2)
 2. `Cytoscape` (3.7.1)
